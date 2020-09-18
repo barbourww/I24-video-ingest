@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+from parameters import *
 
 import time
+import datetime
 from pygstc.gstc import *
 from pygstc.logger import *
 from traceback import print_exc
@@ -114,11 +116,120 @@ class IngestSession:
     """
 
     """
-    def __init__(self, session_root_directory):
-        pass
+    def __init__(self, session_root_directory, session_config_file):
+        """
 
-    def _next_session_number(self):
-        pass
+        :param session_root_directory:
+        :return: None
+        """
+        self.this_session_number = self._next_session_number(session_root_directory)
+        self.session_absolute_directory = os.path.join(session_root_directory,
+                                                       SESSION_DIRECTORY_FORMAT.format(self.this_session_number))
+        if SESSION_DIRECTORY_FORMAT.format(self.this_session_number) in os.listdir(session_root_directory):
+            raise FileExistsError("""Directory overwrite conflict! 
+            Check parameters.SESSION_DIRECTORY_FORMAT and self._next_session_number().""")
+        os.mkdir(self.session_absolute_directory)
+        # fill configuration variables
+        # TODO: list all the config variables here with None initialization
+        self._parse_config_file(session_config_file)
+        self._copy_config_file(session_config_file)
+
+
+    def _next_session_number(self, session_root_directory):
+        """
+        Checks what directories present in `session_root_directory` match the SESSION_DIRECTORY_FORMAT and calculates
+            the next session number. Does not wrap around to zero.
+        :param session_root_directory: Root directory where session-specific directories will be placed.
+        :return: largest session number found in `session_root_directory` plus 1
+        """
+        root_list_dir = os.listdir(session_root_directory)
+        present_matches = []
+        for i in range(0, 99999):
+            if SESSION_DIRECTORY_FORMAT.format(i) in root_list_dir:
+                present_matches.append(i)
+        return max(present_matches) + 1
+
+
+    def _parse_config_file(self, config_file):
+        camera_config = []
+        image_snap_config = []
+        video_snap_config = []
+        recording_config = []
+        block_mapping = {'__CAMERA__': camera_config,
+                         '__IMAGE-SNAPSHOT__': image_snap_config,
+                         '__VIDEO-SNAPSHOT__': video_snap_config,
+                         '__PERSISTENT-RECORDING__': recording_config}
+        # open configuration file and parse it out
+        with open(config_file, 'r') as f:
+            current_block = None
+            block_destination = None
+            for line in f:
+                # ignore empty lines and comment lines
+                if line is None or len(line) == 0 or line[0] == '#':
+                    continue
+                strip_line = line.strip()
+                if len(strip_line) > 2 and strip_line[:2] == '__' and strip_line[-2:] == '__':
+                    # this is a configuration block line
+                    # first check if this is the first one or not
+                    if block_destination is not None and len(current_block) > 0:
+                        # add the block to its destination if it's non-empty
+                        block_destination.append(current_block)
+                    # reset current block to empty and set its destination
+                    current_block = []
+                    block_destination = block_mapping[strip_line]
+                elif '=' in strip_line:
+                    current_block.append(tuple(strip_line.split('=')))
+                else:
+                    raise AttributeError("""Got a line in the configuration file that isn't a block header nor a 
+                    key=value.\nLine: {}""".format(strip_line))
+            # add the last block of the file (if it's non-empty)
+            if block_destination is not None and len(current_block) > 0:
+                block_destination.append(current_block)
+
+
+        # check number of configuration blocks for these configs
+        if len(image_snap_config) > 1:
+            raise AttributeError("More than one configuration block found for __IMAGE-SNAPSHOT__.")
+        elif len(image_snap_config) == 1:     # had one config block
+            image_snap_config = image_snap_config[0]
+        if len(video_snap_config) > 1:
+            raise AttributeError("More than one configuration block found for __VIDEO-SNAPSHOT__.")
+        elif len(video_snap_config) == 1:     # had one config block
+            video_snap_config = video_snap_config[0]
+        if len(recording_config) > 1:
+            raise AttributeError("More than one configuration block found for __PERSISTENT-RECORDING__.")
+        elif len(recording_config) == 1:     # had one config block
+            recording_config = recording_config[0]
+        # log configs then return them
+        print("Camera configuration:", camera_config)
+        print("Image snapshot configuration:", image_snap_config)
+        print("Video snapshot configuration:", video_snap_config)
+        print("Persistent recording configuration:", recording_config)
+        return camera_config, image_snap_config, video_snap_config, recording_config
+
+
+    def _copy_config_file(self, config_file):
+        with open(config_file, 'r') as config_orig:
+            with open(os.path.join(self.session_absolute_directory, "this_session.config"), 'w') as config_copy:
+                for line in config_orig:
+                    config_copy.write(line)
+
+    def _write_session_header_file(self):
+        with open(os.path.join(self.session_absolute_directory, '_SESSION_INFO.txt')) as f:
+            f.write("SESSION #{}".format(self.this_session_number))
+            f.write("INFORMATIONAL/HEADER FILE")
+            f.write("-" * 50)
+            # directory information
+            f.write("\nDirectory (absolute): {}".format(self.session_absolute_directory))
+            # time information
+            timenow = datetime.datetime.now()
+            unix_timenow = (timenow - datetime.datetime(year=1970, month=1, day=1)).total_seconds()
+            f.write("\nSession initialization time (local): {} (UNIX: {})".format(timenow, unix_timenow))
+            utctimenow = datetime.datetime.utcnow()
+            unix_utctimenow = (utctimenow - datetime.datetime(year=1970, month=1, day=1)).total_seconds()
+            f.write("Session initialization time (UTC): {} (UNIX: {})".format(utctimenow, unix_utctimenow))
+            # camera information
+            # TODO: put in config information for cameras, recording, etc
 
     def initialize_gstd(self):
         pass
