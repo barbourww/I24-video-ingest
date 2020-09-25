@@ -3,6 +3,19 @@
 # ------------------------------------------------
 DEFAULT_SESSION_DIRECTORY_FORMAT = "ingest_session_{:05d}"
 
+# formatter names for pipeline interpipesrc and interpipesink elements
+# names are formatted with pipeline name
+# --------------------------------------------------------------------
+PIPE_SOURCE_NAME_FORMATTER = '{}_src'
+PIPE_SINK_NAME_FORMATTER = '{}_sink'
+
+# formatter name for pipeline filesink elements (of whatever form)
+# names are formatted with pipeline name
+# ----------------------------------------------------------------
+PIPE_SINGLE_FILESINK_NAME_FORMATTER = '{}_filesink'         # use when filesink is not camera-specific
+PIPE_CAMERA_FILESINK_NAME_FORMATTER = '{}_filesink_{}'      # use for camera-specific filesinks
+
+
 # default amount of video time that is buffered on incoming streams
 # so that the video snapshot can record into history on trigger
 # -----------------------------------------------------------------

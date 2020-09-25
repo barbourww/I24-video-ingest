@@ -8,6 +8,7 @@ from traceback import print_exc
 import subprocess
 import os
 import warnings
+from collections import OrderedDict
 
 
 class PipelineEntity(object):
@@ -40,18 +41,15 @@ class PipelineEntity(object):
         print("Sending EOS to pipeline: " + self._name)
         self._client.event_eos(self._name)
     
-    def set_file_location(self, location):
-        print("Setting " + self._name + " pipeline recording/snapshot location to " + location)
-        filesink_name = "filesink_" + self._name
-        self._client.element_set(self._name, filesink_name, 'location', location)
-    
     def set_property(self, element_name, property_name, property_value):
-        print("Setting {} property to {}; element {} inside pipeline {}".format(property_name, property_value, element_name, self._name))
+        print("Setting {} property to {}; element {} inside pipeline {}".format(
+            property_name, property_value, element_name, self._name))
         self._client.element_set(self._name, element_name, property_name, property_value)
     
     def listen_to(self, sink):
         print(self._name + " pipeline listening to " + sink)
-        self._client.element_set(self._name, self._name + '_src', 'listen-to', sink)
+        # interpipesrc element is named according to parameters.PIPE_SOURCE_NAME_FORMATTER
+        self._client.element_set(self._name, PIPE_SOURCE_NAME_FORMATTER.format(self._name), 'listen-to', sink)
 
 
 class GstdManager:
@@ -125,24 +123,30 @@ class IngestSession:
         :param session_config_file:
         :return: None
         """
+        # determine session number and root directory
         self.this_session_number = self._next_session_number(session_root_directory)
         print("Next session number according to session root directory: {}".format(self.this_session_number))
         session_relative_directory = DEFAULT_SESSION_DIRECTORY_FORMAT.format(self.this_session_number)
         self.session_absolute_directory = os.path.join(session_root_directory, session_relative_directory)
+        # one last check for directory consistency
         if DEFAULT_SESSION_DIRECTORY_FORMAT.format(self.this_session_number) in os.listdir(session_root_directory):
             raise FileExistsError("""Directory overwrite conflict! 
             Check parameters.SESSION_DIRECTORY_FORMAT and self._next_session_number().""")
         print("Making session directory: {}".format(self.session_absolute_directory))
         os.mkdir(self.session_absolute_directory)
+        self.session_log_directory = os.path.join(self.session_absolute_directory, 'logs')
+        os.mkdir(self.session_log_directory)
         # fill configuration variables
         # self.camera_config is a list of dictionaries; others are just a dictionary
+        # camera configuration retains the order in which the cameras were listed in the config file
         print("Parsing configuration file.")
         self.camera_config, self.image_snap_config, self.video_snap_config, self.recording_config = \
             self._parse_config_file(session_config_file)
-        print("Copying configuration file to session directory.")
-        self._copy_config_file(session_config_file)
+        config_copy_file = self._copy_config_file(session_config_file)
+        print("Copying configuration file to {}".format(config_copy_file))
         # write the session header file, which includes derivative configuration information
-        self._write_session_header_file()
+        header_file = self._write_session_header_file()
+        print("Wrote session header/info file to {}".format(header_file))
         # instantiate GstD manager to run GStreamer Daemon in the background
         print("Initializing GStreamer Daemon manager.")
         self.manager = None
@@ -152,8 +156,10 @@ class IngestSession:
         self.client = None
         self.initialize_gstd_client()
 
-        self.camera_sink_name_formatter = '{}_sink'
-        self.pipelines_cameras = {}
+        # locations to store pipelines {pipeline_name: PipelineEntity, ...}
+        # pre-define names for certain pipelines that will be references later for control
+        # camera pipelines are assumed to be named the same as the specified camera name
+        self.pipelines_cameras = OrderedDict()
         self.image_encoder_name = 'image_encode'
         self.pipelines_video_enc = {}
         self.pipelines_video_buffer = {}
@@ -248,7 +254,7 @@ class IngestSession:
         :param config_file: the original configuration file as defined by the user
         :return: absolute file path of config file copy
         """
-        copy_filename = os.path.join(self.session_absolute_directory, "this_session.config")
+        copy_filename = os.path.join(self.session_absolute_directory, "_SESSION_CONFIG.config")
         with open(config_file, 'r') as config_orig:
             with open(copy_filename, 'w') as config_copy:
                 for line in config_orig:
@@ -256,7 +262,8 @@ class IngestSession:
         return copy_filename
 
     def _write_session_header_file(self):
-        with open(os.path.join(self.session_absolute_directory, '_SESSION_INFO.txt'), 'w') as f:
+        header_filename = os.path.join(self.session_absolute_directory, '_SESSION_INFO.txt')
+        with open(header_filename, 'w') as f:
             f.write("SESSION #{}".format(self.this_session_number))
             f.write("\nINFORMATIONAL/HEADER FILE\n")
             f.write("-" * 50)
@@ -271,6 +278,7 @@ class IngestSession:
             f.write("\nSession initialization time (UTC): {} (UNIX: {})".format(utctimenow, unix_utctimenow))
             # camera information
             # TODO: put in config information for cameras, recording, etc
+        return header_filename
 
     def initialize_gstd(self):
         """
@@ -278,8 +286,8 @@ class IngestSession:
         :return: None
         """
         # TODO: pass in connection parameters
-        self.manager = GstdManager(gst_log='/home/dev/Documents/ingest_pipeline/log/gst.log',
-                                   gstd_log='/home/dev/Documents/ingest_pipeline/log/gstd.log',
+        self.manager = GstdManager(gst_log=os.path.join(self.session_log_directory, 'gst.log'),
+                                   gstd_log=os.path.join(self.session_log_directory, 'gstd.log'),
                                    gst_debug_level=5, tcp_enable=True, http_enable=False)
         self.manager.start()
 
@@ -291,60 +299,76 @@ class IngestSession:
         :return: None
         """
         # TODO: pass in connection parameters or connection mode
-        gstd_py_logger = CustomLogger(logname="ingest", logfile="/home/dev/Documents/ingest_pipeline/log/pygstc.log",
-                                      loglevel="DEBUG")
+        gstd_py_logger = CustomLogger(logname='ingest_log', loglevel='DEBUG',
+                                      logfile=os.path.join(self.session_log_directory, 'pygstc.log'))
         for i in range(num_retry):
             try:
                 self.client = GstdClient(ip='localhost', port=5000, logger=gstd_py_logger)
                 break
             except GstcError:
-                print("Problem connecting to Gstd.")
-                print_exc()
                 time.sleep(1)
+                if i == num_retry - 1:
+                    print_exc()
+                else:
+                    print("Connection failure #{}. Retry connecting to Gstd.".format(i + 1))
         else:
-            raise GstcError("Could not contact Gstd after {} attempts.".format(num_retry))
+            raise RuntimeError("Could not contact Gstd after {} attempts.".format(num_retry))
         self.client.debug_enable(True)
 
     def _construct_camera_pipelines(self):
+        """
+        # ----------------------------------------------------------------------------------------------------------
+        # Each camera pipeline is independent, and constructed as follows.
+        #
+        #  rtspsrc --> rtph264depay --> h264parse --> queue --> interpipesink
+        #
+        # ----------------------------------------------------------------------------------------------------------
+        """
         for single_camera_config in self.camera_config:
             cam_name = single_camera_config['name']
             if cam_name in self.pipelines_cameras:
                 raise AttributeError("Camera name collision. Check configuration file.")
+            # determine connection method and assemble URI
             if 'rtsp_authentication' in single_camera_config and 'rtsp_address' in single_camera_config:
                 cam_connect = 'rtsp://{}@{}'.format(single_camera_config['rtsp_authentication'],
                                                     single_camera_config['rtsp_address'])
                 cam_source = 'rtspsrc location={}'.format(cam_connect)
             else:
+                # only RTSP implemented right now
                 raise AttributeError("Need rtsp_authentication and rtsp_address in each camera config block.")
             print("Source for camera={}: {}".format(cam_name, cam_source))
             cam_sink = 'interpipesink name={} forward-events=true forward-eos=true sync=false'.format(
-                self.camera_sink_name_formatter.format(cam_name))
+                PIPE_SINK_NAME_FORMATTER.format(cam_name))
             pd = '{} ! rtph264depay ! h264parse ! queue ! {}'.format(cam_source, cam_sink)
             cam = PipelineEntity(self.client, cam_name, pd)
             self.pipelines_cameras[cam_name] = cam
 
     def _construct_persistent_recording_pipeline(self):
-        # maximum segment time for multi-segment recording; number of minutes * 60 s/min * 1e9 ns/s
-        max_file_time_mins = float(self.recording_config.get('segment_time', DEFAULT_RECORDING_SEGMENT_DURATION))
-        max_file_time_ns = int(max_file_time_mins * 60 * 1e9)
-        # maximum number of files, per camera, that are kept in storage
-        max_num_files = int(self.recording_config.get('maximum_segment_files', DEFAULT_NUMBER_STORED_SEGMENTS))
-        # if maximum storage space specified, convert and replace max_num_files
-        if 'maximum_camera_storage' in self.recording_config:
-            max_storage_mb = float(self.recording_config['maximum_camera_storage']) * 1024
-            # convert storage space to recording time
-            max_storage_mins = max_storage_mb / ESTIMATED_CAMERA_BITRATE / 60
-            # convert to number of files and truncate decimal
-            max_num_files = int(max_storage_mins / max_file_time_mins)
-            print("Maximum number of files set from maximum storage config value: {}".format(max_num_files))
-        else:
-            print("Maximum number of files set directly from config value: {}".format(max_num_files))
+        """
+        # ----------------------------------------------------------------------------------------------------------
+        # Persistent recording pipeline is a single pipeline definition, but contains multiple sub-pipelines
+        #   - this way all the sub-pipelines start at the same time with one command
+        # ----------------------------------------------------------------------------------------------------------
+        #
+        # interpipesrc (cam0) --> splitmuxsink
+        #
+        # interpipesrc (cam1) --> splitmuxsink
+        #
+        #    |     |     |
+        #    V     V     V
+        #
+        #
+        # ----------------------------------------------------------------------------------------------------------
+        """
         # construct the recording pipeline for all the cameras by adding them all to the same description
         pd = ''
         for cam_name in self.pipelines_cameras.keys():
-            pd += ' interpipesrc format=time allow-renegotiation=false listen-to={}_sink ! '.format(cam_name)
-            pd += 'splitmuxsink name=multisink_{} async-finalize=true muxer-pad-map=x-pad-map,video=video_0'.format(
-                cam_name)
+            # listen to camera sink; no need to name this interpipesrc because it won't be changed
+            pd += ' interpipesrc format=time allow-renegotiation=false listen-to={} ! '.format(
+                PIPE_SINK_NAME_FORMATTER.format(cam_name))
+            # name camera-specific filesink with pipeline name and camera name
+            pd += 'splitmuxsink name={} async-finalize=true muxer-pad-map=x-pad-map,video=video_0'.format(
+                PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name))
         record_h264 = PipelineEntity(self.client, self.persistent_record_name, pd)
         # check the validity of the recording directory and filename
         file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
@@ -360,6 +384,7 @@ class IngestSession:
         elif '{}' in file_name:
             create_dirs = [file_dir]
         else:
+            # didn't find a camera name placeholder in either the file_dir or the file_name
             raise AttributeError("Need to camera name placeholder ('{}') in recording filename template.")
         # create the necessary directories if they don't exist
         try:
@@ -368,22 +393,62 @@ class IngestSession:
                     print("Making directory for persistent recording: {}".format(create_dir))
                     os.mkdir(create_dir)
         except OSError as e:
-            print("Problem creating persistent recording directories.")
+            # FATAL EXCEPTION
+            print("Problem creating persistent recording directories. This is a fatal exception.")
             print_exc()
-            raise e  # re-raise exception
+            raise e
+        # maximum segment time for multi-segment recording; number of minutes * 60 s/min * 1e9 ns/s
+        max_file_time_mins = float(self.recording_config.get('segment_time', DEFAULT_RECORDING_SEGMENT_DURATION))
+        max_file_time_ns = int(max_file_time_mins * 60 * 1e9)
+        # maximum number of files, per camera, that are kept in storage
+        max_num_files = int(self.recording_config.get('maximum_segment_files', DEFAULT_NUMBER_STORED_SEGMENTS))
+        # if maximum storage space specified, convert and replace max_num_files (automatic override)
+        if 'maximum_camera_storage' in self.recording_config:
+            max_storage_mb = float(self.recording_config['maximum_camera_storage']) * 1024
+            # convert storage space to recording time
+            max_storage_mins = max_storage_mb / ESTIMATED_CAMERA_BITRATE / 60
+            # convert to number of files and truncate decimal
+            max_num_files = int(max_storage_mins / max_file_time_mins)
+            print("Maximum number of files set from maximum storage config value: {}".format(max_num_files))
+        else:
+            print("Maximum number of files set directly from config value: {}".format(max_num_files))
+        # set filesink (splitmuxsink element) properties for location and file management
         for cam_name in self.pipelines_cameras.keys():
             cam_dir = (file_dir if '{}' not in file_dir else file_dir.format(cam_name))
             cam_file = (file_name if '{}' not in file_name else file_name.format(cam_name))
             cam_full_location = os.path.join(cam_dir, cam_file)
             print("Setting file path for camera {} to {}".format(cam_name, cam_full_location))
-            record_h264.set_property('multisink_{}'.format(cam_name), 'location', cam_full_location)
-            record_h264.set_property('multisink_{}'.format(cam_name), 'max-size-time', str(max_file_time_ns))
-            record_h264.set_property('multisink_{}'.format(cam_name), 'max-files', str(max_num_files))
+            record_h264.set_property(PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name),
+                                     'location', cam_full_location)
+            record_h264.set_property(PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name),
+                                     'max-size-time', str(max_file_time_ns))
+            record_h264.set_property(PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name),
+                                     'max-files', str(max_num_files))
         self.pipelines_video_rec[self.persistent_record_name] = record_h264
 
     def _construct_buffered_video_snapshot_pipeline(self):
-        # Video buffers to hold recent data for snapshot
+        """
         # ----------------------------------------------------------------------------------------------------------
+        # Video buffers are independent pipelines, each constructed as follows.
+        #
+        #  interpipesrc (camaera) --> queue (FIFO config) --> interpipesink
+        #
+        # ----------------------------------------------------------------------------------------------------------
+        # Video snapshot pipeline records from all buffers, and is constructed as follows.
+        #
+        #                                    mp4mux
+        #                                   __________
+        #                                  /          \
+        #  interpipesrc (buffer-cam0) --> | video_0    |
+        #                                 |            |
+        #  interpipesrc (buffer-cam1) --> | video_1    |
+        #        |   |   |   |            |            |  --> filesink
+        #        V   V   V   V            |            |
+        #  interpipesrc (buffer-camN) --> | video_N    |
+        #                                  \          /
+        #                                   ----------
+        # ----------------------------------------------------------------------------------------------------------
+        """
         # Length of historical video buffer; number of seconds * 1e9 ns/s
         min_buffer_time = float(self.video_snap_config.get('buffer_time', DEFAULT_BUFFER_TIME)) * 1e9
         # Set max time at 105% min time
@@ -391,16 +456,17 @@ class IngestSession:
         # Set buffer memory overflow for safety; assume 2x camera bitrate (in parameters.py) * 1024^2 B/MB
         overflow_size = overflow_time * 2 * ESTIMATED_CAMERA_BITRATE * 1024 * 1024
 
-        buffer_name_format = 'buffer_h264_{}'
+        buffer_name_format = 'buffer_h264_{}'       # not going to need to access these later
         for cam_name, _ in self.pipelines_cameras.items():
             buffer_name = buffer_name_format.format(cam_name)
-            buffer_source = 'interpipesrc format=time listen-to={}_sink'.format(cam_name)
+            buffer_source = 'interpipesrc name={} format=time listen-to={}'.format(
+                PIPE_SOURCE_NAME_FORMATTER.format(buffer_name), PIPE_SINK_NAME_FORMATTER.format(cam_name))
             # Partial queue definition; other parameters set after pipeline creation.
             qname = 'fifo_queue_{}'.format(cam_name)
             # Set leaky=2 for FIFO; silent=true for no events; disable number of buffers limit.
             queue_def = 'queue name={} max-size-buffers=0 leaky=2 silent=true flush-on-eos=false'.format(qname)
-            buffer_sink = 'interpipesink name={}_sink forward-events=true forward-eos=true sync=false'.format(
-                buffer_name)
+            buffer_sink = 'interpipesink name={} forward-events=true forward-eos=true sync=false'.format(
+                PIPE_SINK_NAME_FORMATTER.format(buffer_name))
             buffer_def = '{} ! {} ! {}'.format(buffer_source, queue_def, buffer_sink)
             new_buffer = PipelineEntity(self.client, buffer_name, buffer_def)
             # set buffer properties; first convert values to integers then strings
@@ -413,28 +479,38 @@ class IngestSession:
         # ----------------------------------------------------------------------------------------------------------
         print("CREATING VIDEO SNAPSHOT PIPELINE")
         pd = ''
-        # TODO: these probably need to be ordered into mp4mux
         for ci, cam_name in enumerate(self.pipelines_cameras.keys()):
-            # TODO: fix confusion with listen-to and interpipesink name
-            pd += ' interpipesrc format=time allow-renegotiation=false listen-to={}_sink ! '.format(
-                buffer_name_format.format(cam_name))
+            this_buffer_name = buffer_name_format.format(cam_name)
+            pd += ' interpipesrc format=time allow-renegotiation=false listen-to={} ! '.format(
+                PIPE_SINK_NAME_FORMATTER.format(this_buffer_name))
             pd += 'snapmux.video_{}'.format(ci)
         # file location will be set later when the snapshot is triggered
-        pd += ' mp4mux name=snapmux ! filesink name={}_filesink'.format(self.video_snap_name)
+        pd += ' mp4mux name=snapmux ! filesink name={}'.format(
+            PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.video_snap_name))
         snap_video = PipelineEntity(self.client, self.video_snap_name, pd)
         self.pipelines_snap[self.video_snap_name] = snap_video
 
     def _construct_image_snapshot_pipeline(self):
-        # H.264 -> still image transcoder
+        """
         # ----------------------------------------------------------------------------------------------------------
+        # H.264 to still image transcoder is camera-generic and constructed as follows.
+        #
+        #  interpipesrc --> avdec_h264 --> jpegenc --> interpipesink
+        #
+        # ----------------------------------------------------------------------------------------------------------
+        # Image snapshot pipeline listens to still image encoder and is constructed as follows.
+        #
+        #  interpipesrc --> filesink
+        #
+        # ----------------------------------------------------------------------------------------------------------
+        """
         # source 'listen-to' parameter set at an arbitrary camera for now; changed during snapshot
-        encoder_source = 'interpipesrc name={}_src format=time listen-to={}_sink'.format(
-            self.image_encoder_name, self.pipelines_cameras.keys()[0])
-        # TODO: JPEG encoding configuration? Quality?
-        # TODO: selectable image encoder (e.g., PNG)?
-        encoder_type = 'jpegenc'
-        encoder_sink = 'interpipesink name={}_sink forward-events=true forward-eos=true sync=false async=false enable-last-sample=false drop=true'.format(
-            self.image_encoder_name)
+        encoder_source = 'interpipesrc name={} format=time listen-to={}_sink'.format(
+            PIPE_SOURCE_NAME_FORMATTER.format(self.image_encoder_name), list(self.pipelines_cameras.keys())[0])
+        # not using jpegenc snapshot parameter (sends EOS after encoding a frame) because of H.264 key frames
+        encoder_type = 'jpegenc quality=95'
+        encoder_sink = 'interpipesink name={} '.format(PIPE_SINK_NAME_FORMATTER.format(self.image_encoder_name))
+        encoder_sink += 'forward-events=true forward-eos=true sync=false async=false enable-last-sample=false drop=true'
         encoder_def = '{} ! avdec_h264 ! {} ! {}'.format(encoder_source, encoder_type, encoder_sink)
         image_encoder = PipelineEntity(self.client, self.image_encoder_name, encoder_def)
         self.pipelines_video_enc[self.image_encoder_name] = image_encoder
@@ -442,10 +518,11 @@ class IngestSession:
         # image snapshot - connects to only one camera at a time via image_encode pipeline and dumps a frame to file
         # ----------------------------------------------------------------------------------------------------------
         print("CREATING IMAGE SNAPSHOT PIPELINE")
-        snap_source = 'interpipesrc name={}_src format=time listen-to={} num-buffers=1'.format(
-            self.image_snap_name, self.image_encoder_name)
+        snap_source = 'interpipesrc name={} format=time listen-to={} num-buffers=1'.format(
+            PIPE_SOURCE_NAME_FORMATTER.format(self.image_snap_name),
+            PIPE_SINK_NAME_FORMATTER.format(self.image_encoder_name))
         # file location will be set later when the snapshot is triggered
-        snap_sink = 'filesink name={}_filesink'.format(self.image_snap_name)
+        snap_sink = 'filesink name={}'.format(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.image_snap_name))
         snap_image = PipelineEntity(self.client, self.image_snap_name, '{} ! {}'.format(snap_source, snap_sink))
         self.pipelines_snap[self.image_snap_name] = snap_image
 
@@ -457,25 +534,25 @@ class IngestSession:
         try:
             # Create camera pipelines
             # ----------------------------------------------------------------------------------------------------------
-            print("CREATING CAMERA PIPELINES")
+            print("\nCREATING CAMERA PIPELINES")
             self._construct_camera_pipelines()
 
             # H.264 recording via MPEG4 container mux to parallel streams
             # ----------------------------------------------------------------------------------------------------------
             if len(self.recording_config) > 0 and self.recording_config.get('enable', 'false').lower() == 'true':
-                print("CREATING PERSISTENT RECORDING PIPELINES")
+                print("\nCREATING PERSISTENT RECORDING PIPELINES")
                 self._construct_persistent_recording_pipeline()
 
             # Camera FIFO historical video buffers for video snapshot capability
             # ----------------------------------------------------------------------------------------------------------
             if len(self.video_snap_config) > 0 and self.video_snap_config.get('enable', 'false').lower() == 'true':
-                print("CREATING BUFFER PIPELINES")
+                print("\nCREATING BUFFER PIPELINES")
                 self._construct_buffered_video_snapshot_pipeline()
 
             # H.264 to still image transcoder for image snapshot capability
             # ----------------------------------------------------------------------------------------------------------
             if len(self.image_snap_config) > 0 and self.image_snap_config.get('enable', 'false').lower() == 'true':
-                print("CREATING STILL IMAGE ENCODER PIPELINE")
+                print("\nCREATING STILL IMAGE ENCODER PIPELINE")
                 self._construct_image_snapshot_pipeline()
 
         except (GstcError, GstdError) as e:
@@ -571,6 +648,8 @@ class IngestSession:
         try:
             print("Sending EOS to persistent recording pipeline.")
             self.pipelines_video_rec[self.persistent_record_name].eos()
+            print("Waiting for recording to wrap up after EOS.")
+            time.sleep(5)
             print("Stopping persistent recording pipeline.")
             self.pipelines_video_rec[self.persistent_record_name].stop()
         except (GstcError, GstdError) as e:
@@ -618,8 +697,9 @@ class IngestSession:
         else:
             snap_dir, snap_fn = os.path.split(file_absolute_location)
         # check if there are multiple cameras and make sure the placeholder is included
-        if len(camlist) > 1 and ('{}' not in snap_fn or '{}' not in snap_dir):
+        if len(camlist) > 1 and ('{}' not in snap_fn and '{}' not in snap_dir):
             warnings.warn("More than one camera given for snapshot, but no '{}' in file location. Ignoring command.")
+            return
 
         fns = []
         # run each camera independently
@@ -633,11 +713,13 @@ class IngestSession:
                     snap_abs_dir = (snap_dir if '{}' not in snap_dir else snap_dir.format(camera_name))
                 if not os.path.exists(snap_abs_dir):
                     print("Making directory: {}".format(snap_abs_dir))
+                    os.mkdir(snap_abs_dir)
                 snap_abs_fn = os.path.join(snap_abs_dir,
                                            (snap_fn if '{}' not in snap_fn else snap_fn.format(camera_name)))
                 # set the location of the filesink in the image snap pipeline
                 print("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name, snap_abs_fn))
-                snapimg_pipeline.set_property("{}_filesink".format(self.image_snap_name), 'location', snap_abs_fn)
+                snapimg_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.image_snap_name),
+                                              'location', snap_abs_fn)
             except (OSError, GstcError, GstdError):
                 print("Problem setting up directory and setting filesink location.")
                 print_exc()
@@ -645,7 +727,7 @@ class IngestSession:
             try:
                 # set the encoding pipeline to listen to the appropriate camera
                 print("Setting encoding interpipe to listen to {}.".format(camera_name))
-                encode_img_pipeline.listen_to('{}_sink'.format(camera_name))
+                encode_img_pipeline.listen_to(PIPE_SINK_NAME_FORMATTER.format(camera_name))
                 # play the image encoder pipeline and let it spin up (needs a key frame for proper H.264 decoding)
                 print("Playing image encoder.")
                 encode_img_pipeline.play()
@@ -655,6 +737,7 @@ class IngestSession:
                 time.sleep(IMAGE_SNAP_EXECUTE_TIME)
                 # TODO: EOS encoder?
                 snapimg_pipeline.stop()
+                encode_img_pipeline.stop()
                 fns.append(snap_abs_fn)
             except (GstcError, GstdError):
                 print("Problem with encoding/snapshot pipeline.")
@@ -705,7 +788,8 @@ class IngestSession:
                 os.mkdir(snap_abs_dir)
             snap_abs_fn = os.path.join(snap_abs_dir, snap_fn)
             print("Setting location of {} pipeline filesink to {}.".format(self.video_snap_name, snap_abs_fn))
-            snapvid_pipeline.set_property("{}_filesink".format(self.video_snap_name), 'location', snap_abs_fn)
+            snapvid_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.video_snap_name),
+                                          'location', snap_abs_fn)
         except (OSError, GstdError, GstcError):
             print("Problem with setting video snapshot file location.")
             print_exc()
@@ -781,9 +865,11 @@ if __name__ == '__main__':
     try:
         session.construct_pipelines()
         session.start_cameras()
-        # session.start_buffers()
+        session.start_buffers()
         session.start_persistent_recording_all_cameras()
-        time.sleep(40)
+        time.sleep(10)
+        session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
+        time.sleep(30)
         session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
         time.sleep(65)
         session.stop_persistent_recording_all_cameras()
