@@ -1,9 +1,12 @@
 from parameters import *
 
-import time
-import datetime
 from pygstc.gstc import *
 from pygstc.logger import *
+import logbook
+from logbook.queues import MultiProcessingHandler, MultiProcessingSubscriber
+
+import time
+import datetime
 from traceback import print_exc
 import subprocess
 import multiprocessing
@@ -124,36 +127,45 @@ class IngestSession:
         :param session_config_file:
         :return: None
         """
+
+
         # determine session number and root directory
         self.this_session_number = self._next_session_number(session_root_directory)
-        print("Next session number according to session root directory: {}".format(self.this_session_number))
         session_relative_directory = DEFAULT_SESSION_DIRECTORY_FORMAT.format(self.this_session_number)
         self.session_absolute_directory = os.path.join(session_root_directory, session_relative_directory)
         # one last check for directory consistency
         if DEFAULT_SESSION_DIRECTORY_FORMAT.format(self.this_session_number) in os.listdir(session_root_directory):
             raise FileExistsError("""Directory overwrite conflict! 
             Check parameters.SESSION_DIRECTORY_FORMAT and self._next_session_number().""")
-        print("Making session directory: {}".format(self.session_absolute_directory))
         os.mkdir(self.session_absolute_directory)
         self.session_log_directory = os.path.join(self.session_absolute_directory, 'logs')
         os.mkdir(self.session_log_directory)
+
+        # set up logging that will be used by all processes
+        # multiprocessing.set_start_method('spawn')
+        self.logqueue = multiprocessing.Queue(-1) # TODO: what is -1?
+        self.handler, self.sub = None, None     # initialize these to None; they'll be set in self._setup_logging()
+        self._setup_logging()
+        logbook.notice("Next session number according to session root directory: {}".format(self.this_session_number))
+        logbook.notice("Session directory created: {}".format(self.session_absolute_directory))
+        logbook.notice("Session logging directory created: {}".format(self.session_log_directory))
         # fill configuration variables
         # self.camera_config is a list of dictionaries; others are just a dictionary
         # camera configuration retains the order in which the cameras were listed in the config file
-        print("Parsing configuration file.")
+        logbook.notice("Parsing configuration file.")
         self.camera_config, self.image_snap_config, self.video_snap_config, self.recording_config = \
             self._parse_config_file(session_config_file)
         config_copy_file = self._copy_config_file(session_config_file)
-        print("Copying configuration file to {}".format(config_copy_file))
+        logbook.notice("Copying configuration file to {}".format(config_copy_file))
         # write the session header file, which includes derivative configuration information
         header_file = self._write_session_header_file()
-        print("Wrote session header/info file to {}".format(header_file))
+        logbook.notice("Wrote session header/info file to {}".format(header_file))
         # instantiate GstD manager to run GStreamer Daemon in the background
-        print("Initializing GStreamer Daemon manager.")
+        logbook.notice("Initializing GStreamer Daemon manager.")
         self.manager = None
         self.initialize_gstd()
         # instantiate the GstD Python connection client
-        print("Initializing GStreamer Daemon Python client.")
+        logbook.notice("Initializing GStreamer Daemon Python client.")
         self.client = None
         self.initialize_gstd_client()
 
@@ -170,6 +182,21 @@ class IngestSession:
         self.image_snap_name = 'snap_image'
         self.pipelines_snap = {}
 
+    def _setup_logging(self, level=logbook.DEBUG):
+        self.handler = MultiProcessingHandler(self.logqueue)
+        self.handler.push_application()
+        target_handlers = logbook.NestedSetup([
+            logbook.NullHandler(),
+            logbook.StderrHandler(level=logbook.INFO,
+                                  format_string='{record.time:%Y-%m-%d %H:%M:%S}|{record.level_name}|{record.message}'),
+            logbook.TimedRotatingFileHandler(filename=os.path.join(self.session_log_directory, 'manager.log'),
+                                             level=level, bubble=True,
+                                             date_format='%Y-%m-%d', timed_filename_for_current=True,
+                                             backup_count=5, rollover_format='{basename}-{timestamp}{ext}')
+        ])
+        self.sub = MultiProcessingSubscriber(self.logqueue)
+        self.sub.dispatch_in_background(target_handlers)
+        logbook.notice("Logger setup complete")
 
     def _next_session_number(self, session_root_directory):
         """
@@ -242,10 +269,10 @@ class IngestSession:
         elif len(recording_config) == 1:     # had one config block
             recording_config = recording_config[0]
         # log configs then return them
-        print("Camera configuration:", camera_config)
-        print("Image snapshot configuration:", image_snap_config)
-        print("Video snapshot configuration:", video_snap_config)
-        print("Persistent recording configuration:", recording_config)
+        logbook.notice("Camera configuration:", camera_config)
+        logbook.notice("Image snapshot configuration:", image_snap_config)
+        logbook.notice("Video snapshot configuration:", video_snap_config)
+        logbook.notice("Persistent recording configuration:", recording_config)
         return camera_config, image_snap_config, video_snap_config, recording_config
 
     def _copy_config_file(self, config_file):
@@ -311,8 +338,9 @@ class IngestSession:
                 if i == num_retry - 1:
                     print_exc()
                 else:
-                    print("Connection failure #{}. Retry connecting to Gstd.".format(i + 1))
+                    logbook.warn("Connection failure #{}. Retry connecting to Gstd.".format(i + 1))
         else:
+            logbook.critical("Problem with Gstreamer Daemon.")
             raise RuntimeError("Could not contact Gstd after {} attempts.".format(num_retry))
         self.client.debug_enable(True)
 
@@ -328,6 +356,7 @@ class IngestSession:
         for single_camera_config in self.camera_config:
             cam_name = single_camera_config['name']
             if cam_name in self.pipelines_cameras:
+                logbook.critical("Problem with camera configuration.")
                 raise AttributeError("Camera name collision. Check configuration file.")
             # determine connection method and assemble URI
             if 'rtsp_authentication' in single_camera_config and 'rtsp_address' in single_camera_config:
@@ -336,8 +365,9 @@ class IngestSession:
                 cam_source = 'rtspsrc location={}'.format(cam_connect)
             else:
                 # only RTSP implemented right now
+                logbook.critical("Problem with camera configuration.")
                 raise AttributeError("Need rtsp_authentication and rtsp_address in each camera config block.")
-            print("Source for camera={}: {}".format(cam_name, cam_source))
+            logbook.info("Source for camera={}: {}".format(cam_name, cam_source))
             cam_sink = 'interpipesink name={} forward-events=true forward-eos=true sync=false'.format(
                 PIPE_SINK_NAME_FORMATTER.format(cam_name))
             pd = '{} ! rtph264depay ! h264parse ! queue ! {}'.format(cam_source, cam_sink)
@@ -378,6 +408,7 @@ class IngestSession:
         file_dir = os.path.join(self.session_absolute_directory, file_dir)
         # check that the file number formatter is present
         if '%d' not in file_name and not any(['%0{}d'.format(i) in file_name for i in range(10)]):
+            logbook.critical("Problem with recording configuration.")
             raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
         # check if we need to create camera-specific directories, or just one directory
         if '{}' in file_dir:
@@ -386,16 +417,17 @@ class IngestSession:
             create_dirs = [file_dir]
         else:
             # didn't find a camera name placeholder in either the file_dir or the file_name
+            logbook.critical("Problem with recording configuration.")
             raise AttributeError("Need to camera name placeholder ('{}') in recording filename template.")
         # create the necessary directories if they don't exist
         try:
             for create_dir in create_dirs:
                 if not os.path.exists(create_dir):
-                    print("Making directory for persistent recording: {}".format(create_dir))
+                    logbook.notice("Making directory for persistent recording: {}".format(create_dir))
                     os.mkdir(create_dir)
         except OSError as e:
             # FATAL EXCEPTION
-            print("Problem creating persistent recording directories. This is a fatal exception.")
+            logbook.critical("Problem creating persistent recording directories. This is a fatal exception.")
             print_exc()
             raise e
         # maximum segment time for multi-segment recording; number of minutes * 60 s/min * 1e9 ns/s
@@ -478,7 +510,7 @@ class IngestSession:
 
         # Video snapshot - connects to queue-buffers from each camera, muxes, and file-sinks
         # ----------------------------------------------------------------------------------------------------------
-        print("CREATING VIDEO SNAPSHOT PIPELINE")
+        logbook.notice("CREATING VIDEO SNAPSHOT PIPELINE")
         pd = ''
         for ci, cam_name in enumerate(self.pipelines_cameras.keys()):
             this_buffer_name = buffer_name_format.format(cam_name)
@@ -518,7 +550,7 @@ class IngestSession:
 
         # image snapshot - connects to only one camera at a time via image_encode pipeline and dumps a frame to file
         # ----------------------------------------------------------------------------------------------------------
-        print("CREATING IMAGE SNAPSHOT PIPELINE")
+        logbook.notice("CREATING IMAGE SNAPSHOT PIPELINE")
         snap_source = 'interpipesrc name={} format=time listen-to={} num-buffers=1'.format(
             PIPE_SOURCE_NAME_FORMATTER.format(self.image_snap_name),
             PIPE_SINK_NAME_FORMATTER.format(self.image_encoder_name))
@@ -535,29 +567,29 @@ class IngestSession:
         try:
             # Create camera pipelines
             # ----------------------------------------------------------------------------------------------------------
-            print("\nCREATING CAMERA PIPELINES")
+            logbook.notice("\nCREATING CAMERA PIPELINES")
             self._construct_camera_pipelines()
 
             # H.264 recording via MPEG4 container mux to parallel streams
             # ----------------------------------------------------------------------------------------------------------
             if len(self.recording_config) > 0 and self.recording_config.get('enable', 'false').lower() == 'true':
-                print("\nCREATING PERSISTENT RECORDING PIPELINES")
+                logbook.notice("\nCREATING PERSISTENT RECORDING PIPELINES")
                 self._construct_persistent_recording_pipeline()
 
             # Camera FIFO historical video buffers for video snapshot capability
             # ----------------------------------------------------------------------------------------------------------
             if len(self.video_snap_config) > 0 and self.video_snap_config.get('enable', 'false').lower() == 'true':
-                print("\nCREATING BUFFER PIPELINES")
+                logbook.notice("\nCREATING BUFFER PIPELINES")
                 self._construct_buffered_video_snapshot_pipeline()
 
             # H.264 to still image transcoder for image snapshot capability
             # ----------------------------------------------------------------------------------------------------------
             if len(self.image_snap_config) > 0 and self.image_snap_config.get('enable', 'false').lower() == 'true':
-                print("\nCREATING STILL IMAGE ENCODER PIPELINE")
+                logbook.notice("\nCREATING STILL IMAGE ENCODER PIPELINE")
                 self._construct_image_snapshot_pipeline()
 
         except (GstcError, GstdError) as e:
-            print("Failure during pipeline construction.")
+            logbook.critical("Failure during pipeline construction.")
             print_exc()
             self.deconstruct_all_pipelines()
             self.kill_gstd()
@@ -569,14 +601,14 @@ class IngestSession:
         :return: None
         """
         try:
-            print("Starting camera streams.")
+            logbook.notice("Starting camera streams.")
             for pipeline_name, pipeline in self.pipelines_cameras.items():
                 print("Starting {}.".format(pipeline_name))
                 pipeline.play()
             time.sleep(5)
-            print("Camera streams initialized.")
+            logbook.notice("Camera streams initialized.")
         except (GstcError, GstdError) as e:
-            print("Could not initialize camera streams.")
+            logbook.critical("Could not initialize camera streams.")
             print_exc()
             self.deconstruct_all_pipelines()
             self.kill_gstd()
@@ -588,16 +620,16 @@ class IngestSession:
         :return: None
         """
         try:
-            print("Starting camera stream buffers for video snapshot.")
+            logbook.notice("Starting camera stream buffers for video snapshot.")
             for pipeline_name, pipeline in self.pipelines_video_buffer.items():
                 print("Starting {}.".format(pipeline_name))
                 pipeline.play()
             time.sleep(1)
-            print("Camera stream buffers initialized.")
-            print("Buffers will reach capacity in {} seconds.".format(
+            logbook.notice("Camera stream buffers initialized.")
+            logbook.notice("Buffers will reach capacity in {} seconds.".format(
                 self.video_snap_config.get('buffer_time', DEFAULT_BUFFER_TIME)))
         except (GstcError, GstdError) as e:
-            print("Could not initialize camera stream buffers.")
+            logbook.error("Could not initialize camera stream buffers.")
             print_exc()
 
     def start_persistent_recording_all_cameras(self):
@@ -625,18 +657,18 @@ class IngestSession:
                 #     'multisink_{}'.format(cam_name), 'location', format_full_path)
                 fns.append(format_full_path)
         except (GstcError, GstdError) as e:
-            print("Could not set camera recording locations. Failed on {}".format(cam_name))
+            logbook.error("Could not set camera recording locations. Failed on {}".format(cam_name))
             print_exc()
             return None
-        print("Set file locations for all {} cameras.".format(len(self.pipelines_cameras)))
+        logbook.notice("Set file locations for all {} cameras.".format(len(self.pipelines_cameras)))
         # start the whole recording pipeline
-        print("Starting recording.")
+        logbook.notice("Starting recording.")
         try:
             self.pipelines_video_rec[self.persistent_record_name].play()
             time.sleep(5)
-            print("Persistent recording pipeline playing.")
+            logbook.notice("Persistent recording pipeline playing.")
         except (GstcError, GstdError):
-            print("Couldn't play persistent recording pipeline.")
+            logbook.error("Couldn't play persistent recording pipeline.")
             print_exc()
             return None
         return fns
@@ -647,14 +679,14 @@ class IngestSession:
         :return: None
         """
         try:
-            print("Sending EOS to persistent recording pipeline.")
+            logbook.notice("Sending EOS to persistent recording pipeline.")
             self.pipelines_video_rec[self.persistent_record_name].eos()
-            print("Waiting for recording to wrap up after EOS.")
+            logbook.notice("Waiting for recording to wrap up after EOS.")
             time.sleep(5)
-            print("Stopping persistent recording pipeline.")
+            logbook.notice("Stopping persistent recording pipeline.")
             self.pipelines_video_rec[self.persistent_record_name].stop()
         except (GstcError, GstdError) as e:
-            print("Problem with stopping persistent recording.")
+            logbook.error("Problem with stopping persistent recording.")
             print_exc()
 
     def _image_snapshot_worker(self, camera_list, snap_abs_dir, snap_fn):
@@ -678,25 +710,25 @@ class IngestSession:
                 snap_abs_fmt_dir = (snap_abs_dir if '{}' not in snap_abs_dir else snap_abs_dir.format(camera_name))
                 # make the directory if it doesn't exist
                 if not os.path.exists(snap_abs_fmt_dir):
-                    print("Making directory: {}".format(snap_abs_fmt_dir))
+                    logbook.notice("Making directory: {}".format(snap_abs_fmt_dir))
                     os.mkdir(snap_abs_fmt_dir)
                 # join the formatted absolute directory and the formatted (if applicable) filename
                 snap_abs_fmt_fn = os.path.join(snap_abs_fmt_dir,
                                                (snap_fn if '{}' not in snap_fn else snap_fn.format(camera_name)))
                 # set the location of the filesink in the image snap pipeline
-                print("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name, snap_abs_fmt_fn))
+                logbook.info("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name, snap_abs_fmt_fn))
                 snapimg_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.image_snap_name),
                                               'location', snap_abs_fmt_fn)
             except (OSError, GstcError, GstdError):
-                print("Problem setting up directory and setting filesink location.")
+                logbook.error("Problem setting up directory and setting filesink location.")
                 print_exc()
                 continue
             try:
                 # set the encoding pipeline to listen to the appropriate camera
-                print("Setting encoding interpipe to listen to {}.".format(camera_name))
+                logbook.info("Setting encoding interpipe to listen to {}.".format(camera_name))
                 encode_img_pipeline.listen_to(PIPE_SINK_NAME_FORMATTER.format(camera_name))
                 # play the image encoder pipeline and let it spin up (needs a key frame for proper H.264 decoding)
-                print("Playing image encoder.")
+                logbook.info("Playing image encoder.")
                 encode_img_pipeline.play()
                 time.sleep(IMAGE_ENCODE_SPIN_UP)
                 # run the snap image pipeline for a bit, not sure if this time matters much
@@ -707,11 +739,11 @@ class IngestSession:
                 encode_img_pipeline.stop()
                 fns.append(snap_abs_fmt_fn)
             except (GstcError, GstdError):
-                print("Problem with encoding/snapshot pipeline.")
+                logbook.error("Problem with encoding/snapshot pipeline.")
                 print_exc()
                 continue
-        print("Image snapshot worker process complete.")
-        print("Snapshots: {}".format(fns))
+        logbook.notice("Image snapshot worker process complete.")
+        logbook.notice("Snapshots: {}".format(fns))
         return fns
 
     def take_image_snapshot(self, file_relative_location, file_absolute_location=None, cameras='all'):
@@ -726,7 +758,7 @@ class IngestSession:
         """
         # check if video snapshot pipeline was constructed
         if self.image_snap_name not in self.pipelines_snap or self.image_encoder_name not in self.pipelines_video_enc:
-            warnings.warn("Image snapshot pipeline or encoder pipeline wasn't constructed. Ignoring command.")
+            logbook.error("Image snapshot pipeline or encoder pipeline wasn't constructed. Ignoring command.")
             return None
         # extract the camera list from the given parameter
         if cameras == 'all':
@@ -737,15 +769,15 @@ class IngestSession:
             # if it's just a single camera we'll still get a list
             camlist = cameras.split(',')
         else:
-            warnings.warn("""Got an invalid type for argument `cameras`. 
+            logbook.error("""Got an invalid type for argument `cameras`. 
             Need list/tuple of str or comma-delineated str or 'all'.""")
             return None
         # check that all of the camera names are correct
         if not all([cam in self.pipelines_cameras for cam in camlist]):
-            warnings.warn("""One or more of the cameras specified for snapshot is not valid. 
+            logbook.error("""One or more of the cameras specified for snapshot is not valid. 
             Available: {}. Specified: {}. Ignoring command.""".format(self.pipelines_cameras.keys(), cameras))
             return None
-        print("Snapping cameras: {}".format(camlist))
+        logbook.notice("Snapping cameras: {}".format(camlist))
         # set the directory and filename from the absolute or relative parameters given
         if file_absolute_location is None:
             snap_dir, snap_fn = os.path.split(file_relative_location)
@@ -754,17 +786,17 @@ class IngestSession:
             snap_abs_dir, snap_fn = os.path.split(file_absolute_location)
         # check if there are multiple cameras and make sure the placeholder is included
         if len(camlist) > 1 and ('{}' not in snap_fn and '{}' not in snap_abs_dir):
-            warnings.warn("More than one camera given for snapshot, but no '{}' in file location. Ignoring command.")
+            logbook.error("More than one camera given for snapshot, but no '{}' in file location. Ignoring command.")
             return None
 
         imgsnap = multiprocessing.Process(target=self._image_snapshot_worker,
                                           args=(camlist, snap_abs_dir, snap_fn))
-        print("Starting image snapshot worker process.")
+        logbook.notice("Starting image snapshot worker process.")
         try:
             imgsnap.start()
-            print("Process started, exiting blocking function.")
+            logbook.notice("Process started, exiting blocking function.")
         except multiprocessing.ProcessError:
-            print("Problem starting image snap worker process.")
+            logbook.error("Problem starting image snap worker process.")
             print_exc()
         return None
 
@@ -777,20 +809,20 @@ class IngestSession:
         """
         try:
             snapvid_pipeline = self.pipelines_snap[self.video_snap_name]
-            print("Setting filesink location of video snapshot pipeline.")
+            logbook.info("Setting filesink location of video snapshot pipeline.")
             snapvid_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.video_snap_name),
                                           'location', snapshot_file_absolute_location)
-            print("Playing {} pipeline.".format(self.video_snap_name))
+            logbook.info("Playing {} pipeline.".format(self.video_snap_name))
             snapvid_pipeline.play()
-            print("Waiting for {} seconds of recording time...".format(duration))
+            logbook.info("Waiting for {} seconds of recording time...".format(duration))
             time.sleep(duration)
-            print("Sending EOS and stop to {} pipeline.".format(self.video_snap_name))
+            logbook.info("Sending EOS and stop to {} pipeline.".format(self.video_snap_name))
             snapvid_pipeline.eos()
             snapvid_pipeline.stop()
-            print("Video snapshot complete to {}.".format(snapshot_file_absolute_location))
+            logbook.info("Video snapshot complete to {}.".format(snapshot_file_absolute_location))
             return snapshot_file_absolute_location
         except (GstdError, GstcError):
-            print("Problem with video snapshot.")
+            logbook.error("Problem with video snapshot.")
             print_exc()
             return None
 
@@ -805,48 +837,48 @@ class IngestSession:
         """
         # check if video snapshot pipeline was constructed
         if self.video_snap_name not in self.pipelines_snap:
-            warnings.warn("Video snapshot pipeline wasn't constructed. Ignoring command.")
+            logbook.error("Video snapshot pipeline wasn't constructed. Ignoring command.")
             return None
         # check duration limits
         if duration > 3600:
-            warnings.warn("Video snapshot duration is too high. Limit = 1 hour (3600 seconds). Ignoring command.")
+            logbook.error("Video snapshot duration is too high. Limit = 1 hour (3600 seconds). Ignoring command.")
             return None
         elif duration < 5:
-            warnings.warn("Video snapshot duration is too short. Minimum = 5 seconds. Ignoring command.")
+            logbook.error("Video snapshot duration is too short. Minimum = 5 seconds. Ignoring command.")
             return None
         # decide directory from relative vs. absolute
         if file_absolute_location is None:
             snap_dir, snap_fn = os.path.split(file_relative_location)
             if snap_dir.startswith('./'):
                 snap_dir = snap_dir[2:]
-                print("Reformatting relative location to {}".format(snap_dir))
+                logbook.info("Reformatting relative location to {}".format(snap_dir))
             elif snap_dir.startswith('/'):
                 snap_dir = snap_dir[1:]
-                print("Reformatting relative location to {}".format(snap_dir))
+                logbook.info("Reformatting relative location to {}".format(snap_dir))
             snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
-            print("Relative file location inside session directory: {}".format(snap_abs_dir))
+            logbook.info("Relative file location inside session directory: {}".format(snap_abs_dir))
         else:
             snap_abs_dir, snap_fn = os.path.split(file_absolute_location)
-            print("Absolute file location directory override for video snap: {}".format(snap_abs_dir))
+            logbook.info("Absolute file location directory override for video snap: {}".format(snap_abs_dir))
         # make the directory, if needed, then set the file location
         try:
             if not os.path.exists(snap_abs_dir):
-                print("Directory doesn't exist. Making it now.")
+                logbook.notice("Video snapshot directory doesn't exist. Making it now.")
                 os.mkdir(snap_abs_dir)
         except OSError:
-            print("Problem making directory.")
+            logbook.error("Problem making directory.")
             print_exc()
             return None
         snap_abs_fn = os.path.join(snap_abs_dir, snap_fn)
 
         vidsnap = multiprocessing.Process(target=self._video_snapshot_worker,
                                           args=(duration, snap_abs_fn))
-        print("Starting video snapshot worker process.")
+        logbook.notice("Starting video snapshot worker process.")
         try:
             vidsnap.start()
-            print("Process started, exiting blocking function.")
+            logbook.notice("Process started, exiting blocking function.")
         except multiprocessing.ProcessError:
-            print("Problem starting video snap worker process.")
+            logbook.error("Problem starting video snap worker process.")
             print_exc()
         return None
 
@@ -855,41 +887,43 @@ class IngestSession:
         Sends EOS signal to recording and encoder pipelines, then calls stop command on all instantiated pipelines.
         :return: None
         """
+        logbook.notice("Sending EOS for relevant pipelines and stopping all pipelines. This will take a few seconds.")
         # send the end of stream (EOS) signals first
         for group in (self.pipelines_video_rec, self.pipelines_video_enc):
             for pipeline_name, pipeline in group.items():
                 try:
-                    print("Sending EOS to {}.".format(pipeline_name))
+                    logbook.info("Sending EOS to {}.".format(pipeline_name))
                     pipeline.eos()
                 except:
-                    print("Couldn't EOS {}.".format(pipeline_name))
+                    logbook.warning("Couldn't EOS {}.".format(pipeline_name))
                     print_exc()
-        print("Waiting a bit for EOS to take effect.")
+        logbook.info("Waiting a bit for EOS to take effect.")
         time.sleep(10)
         # now stop each pipeline
         for group in (self.pipelines_snap, self.pipelines_video_rec, self.pipelines_video_enc,
                       self.pipelines_video_buffer, self.pipelines_cameras):
             for pipeline_name, pipeline in group.items():
                 try:
-                    print("Stopping {}.".format(pipeline_name))
+                    logbook.info("Stopping {}.".format(pipeline_name))
                     pipeline.stop()
                 except:
-                    print("Couldn't stop {}.".format(pipeline_name))
+                    logbook.warning("Couldn't stop {}.".format(pipeline_name))
 
     def deconstruct_all_pipelines(self):
         """
         Calls the pipeline delete command on all instantiated pipelines.
         :return: None
         """
+        logbook.notice("Deconstructing all pipelines.")
         for group in (self.pipelines_snap, self.pipelines_video_rec, self.pipelines_video_enc,
                       self.pipelines_video_buffer, self.pipelines_cameras):
             for pipeline_name, pipeline in group.items():
                 try:
-                    print("Deleting {} pipeline.".format(pipeline_name))
+                    logbook.info("Deleting {} pipeline.".format(pipeline_name))
                     pipeline.delete()
-                    print("Deleted {}.".format(pipeline_name))
+                    logbook.info("Deleted {}.".format(pipeline_name))
                 except (GstcError, GstdError):
-                    print("Exception while deleting {}.".format(pipeline_name))
+                    logbook.warning("Exception while deleting {}.".format(pipeline_name))
                     print_exc()
 
     def kill_gstd(self):
@@ -897,9 +931,11 @@ class IngestSession:
         Stops the GstdManager that was instantiated for this IngestSession.
         return: None
         """
+        logbook.notice("Stopping Gstreamer Daemon.")
         self.manager.stop()
 
-if __name__ == '__main__':
+
+def main():
     session = IngestSession(session_root_directory='/home/dev/Videos/ingest_pipeline',
                             session_config_file='./sample.config')
     try:
@@ -907,7 +943,7 @@ if __name__ == '__main__':
         session.start_cameras()
         session.start_buffers()
         session.start_persistent_recording_all_cameras()
-        time.sleep(10)
+        time.sleep(30)
         session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
         session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
         print("Wait 65")
@@ -920,3 +956,6 @@ if __name__ == '__main__':
         session.stop_all_pipelines()
         session.deconstruct_all_pipelines()
         session.kill_gstd()
+
+if __name__ == '__main__':
+    main()
