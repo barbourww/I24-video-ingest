@@ -6,6 +6,7 @@ from pygstc.gstc import *
 from pygstc.logger import *
 from traceback import print_exc
 import subprocess
+import multiprocessing
 import os
 import warnings
 from collections import OrderedDict
@@ -656,70 +657,36 @@ class IngestSession:
             print("Problem with stopping persistent recording.")
             print_exc()
 
-    def take_image_snapshot(self, file_relative_location, file_absolute_location=None, cameras='all'):
+    def _image_snapshot_worker(self, camera_list, snap_abs_dir, snap_fn):
         """
-        Takes a still image snapshot of each camera specified. They are taken one at a time in order to avoid spinning
-            up numerous H.264->still transcoding pipelines. Failure of one snapshot will not prevent the others.
-        :param file_relative_location: location inside session directory to store snapshots; if more than one camera
-            is specified, then '{}' placeholder must be included in directory or filename portion for camera name
-        :param file_absolute_location: same as relative location, but setting this != None automatically overrides it
-        :param cameras: cameras to snapshot; 'all'=all cameras; list/tuple of camera names; ','-sep. str of camera names
-        :return: list of absolute filenames for each snapshot that was successful
+        Executes the image snapshot given the final camera list and file location information.
+            Meant to run in non-blocking mp.Process.
+        :param camera_list: list of camera names to snapshot (list of strings assembled in calling function)
+        :param snap_abs_dir: absolute directory for snapshot storage (optional '{}' formatter for camera name)
+        :param snap_fn: snapshot file name (optional '{}' for camera name, requirement checked in calling function)
+        :return: list of successful image snapshot filenames, if any (list can be empty)
         """
-        # check if video snapshot pipeline was constructed
-        if self.image_snap_name not in self.pipelines_snap or self.image_encoder_name not in self.pipelines_video_enc:
-            warnings.warn("Image snapshot pipeline or encoder pipeline wasn't constructed. Ignoring command.")
-            return None
-        else:
-            # get the image snap and image encode pipelines
-            snapimg_pipeline = self.pipelines_snap[self.image_snap_name]
-            encode_img_pipeline = self.pipelines_video_enc[self.image_encoder_name]
-        # extract the camera list from the given parameter
-        if cameras == 'all':
-            camlist = list(self.pipelines_cameras.keys())
-        elif type(cameras) in (list, tuple):
-            camlist = cameras
-        elif type(cameras) is str:
-            camlist = cameras.split(',')
-        else:
-            warnings.warn("""Got an invalid type for argument `cameras`. 
-            Need list/tuple of str or comma-delineated str or 'all'.""")
-            return []
-        # check that all of the camera names are correct
-        if not all([cam in self.pipelines_cameras for cam in camlist]):
-            warnings.warn("""One or more of the cameras specified for snapshot is not valid. 
-            Available: {}. Specified: {}. Ignoring command.""".format(self.pipelines_cameras.keys(), cameras))
-            return []
-        print("Snapping cameras: {}".format(camlist))
-        # set the directory and filename from the absolute or relative parameters given
-        if file_absolute_location is None:
-            snap_dir, snap_fn = os.path.split(file_relative_location)
-        else:
-            snap_dir, snap_fn = os.path.split(file_absolute_location)
-        # check if there are multiple cameras and make sure the placeholder is included
-        if len(camlist) > 1 and ('{}' not in snap_fn and '{}' not in snap_dir):
-            warnings.warn("More than one camera given for snapshot, but no '{}' in file location. Ignoring command.")
-            return
-
+        # get the image snap and image encode pipelines
+        snapimg_pipeline = self.pipelines_snap[self.image_snap_name]
+        encode_img_pipeline = self.pipelines_video_enc[self.image_encoder_name]
         fns = []
         # run each camera independently
         # first check the directory existence and create if necessary
-        for camera_name in self.pipelines_cameras.keys():
+        for camera_name in camera_list:
             try:
-                if file_absolute_location is None:
-                    snap_abs_dir = os.path.join(self.session_absolute_directory,
-                                                (snap_dir if '{}' not in snap_dir else snap_dir.format(camera_name)))
-                else:
-                    snap_abs_dir = (snap_dir if '{}' not in snap_dir else snap_dir.format(camera_name))
-                if not os.path.exists(snap_abs_dir):
-                    print("Making directory: {}".format(snap_abs_dir))
-                    os.mkdir(snap_abs_dir)
-                snap_abs_fn = os.path.join(snap_abs_dir,
-                                           (snap_fn if '{}' not in snap_fn else snap_fn.format(camera_name)))
+                # add in camera name to directory if needed
+                snap_abs_fmt_dir = (snap_abs_dir if '{}' not in snap_abs_dir else snap_abs_dir.format(camera_name))
+                # make the directory if it doesn't exist
+                if not os.path.exists(snap_abs_fmt_dir):
+                    print("Making directory: {}".format(snap_abs_fmt_dir))
+                    os.mkdir(snap_abs_fmt_dir)
+                # join the formatted absolute directory and the formatted (if applicable) filename
+                snap_abs_fmt_fn = os.path.join(snap_abs_fmt_dir,
+                                               (snap_fn if '{}' not in snap_fn else snap_fn.format(camera_name)))
                 # set the location of the filesink in the image snap pipeline
-                print("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name, snap_abs_fn))
+                print("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name, snap_abs_fmt_fn))
                 snapimg_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.image_snap_name),
-                                              'location', snap_abs_fn)
+                                              'location', snap_abs_fmt_fn)
             except (OSError, GstcError, GstdError):
                 print("Problem setting up directory and setting filesink location.")
                 print_exc()
@@ -738,12 +705,94 @@ class IngestSession:
                 # TODO: EOS encoder?
                 snapimg_pipeline.stop()
                 encode_img_pipeline.stop()
-                fns.append(snap_abs_fn)
+                fns.append(snap_abs_fmt_fn)
             except (GstcError, GstdError):
                 print("Problem with encoding/snapshot pipeline.")
                 print_exc()
                 continue
+        print("Image snapshot worker process complete.")
+        print("Snapshots: {}".format(fns))
         return fns
+
+    def take_image_snapshot(self, file_relative_location, file_absolute_location=None, cameras='all'):
+        """
+        Takes a still image snapshot of each camera specified. They are taken one at a time in order to avoid spinning
+            up numerous H.264->still transcoding pipelines. Failure of one snapshot will not prevent the others.
+        :param file_relative_location: location inside session directory to store snapshots; if more than one camera
+            is specified, then '{}' placeholder must be included in directory or filename portion for camera name
+        :param file_absolute_location: same as relative location, but setting this != None automatically overrides it
+        :param cameras: cameras to snapshot; 'all'=all cameras; list/tuple of camera names; ','-sep. str of camera names
+        :return: None
+        """
+        # check if video snapshot pipeline was constructed
+        if self.image_snap_name not in self.pipelines_snap or self.image_encoder_name not in self.pipelines_video_enc:
+            warnings.warn("Image snapshot pipeline or encoder pipeline wasn't constructed. Ignoring command.")
+            return None
+        # extract the camera list from the given parameter
+        if cameras == 'all':
+            camlist = list(self.pipelines_cameras.keys())
+        elif type(cameras) in (list, tuple):
+            camlist = cameras
+        elif type(cameras) is str:
+            # if it's just a single camera we'll still get a list
+            camlist = cameras.split(',')
+        else:
+            warnings.warn("""Got an invalid type for argument `cameras`. 
+            Need list/tuple of str or comma-delineated str or 'all'.""")
+            return None
+        # check that all of the camera names are correct
+        if not all([cam in self.pipelines_cameras for cam in camlist]):
+            warnings.warn("""One or more of the cameras specified for snapshot is not valid. 
+            Available: {}. Specified: {}. Ignoring command.""".format(self.pipelines_cameras.keys(), cameras))
+            return None
+        print("Snapping cameras: {}".format(camlist))
+        # set the directory and filename from the absolute or relative parameters given
+        if file_absolute_location is None:
+            snap_dir, snap_fn = os.path.split(file_relative_location)
+            snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
+        else:
+            snap_abs_dir, snap_fn = os.path.split(file_absolute_location)
+        # check if there are multiple cameras and make sure the placeholder is included
+        if len(camlist) > 1 and ('{}' not in snap_fn and '{}' not in snap_abs_dir):
+            warnings.warn("More than one camera given for snapshot, but no '{}' in file location. Ignoring command.")
+            return None
+
+        imgsnap = multiprocessing.Process(target=self._image_snapshot_worker,
+                                          args=(camlist, snap_abs_dir, snap_fn))
+        print("Starting image snapshot worker process.")
+        try:
+            imgsnap.start()
+            print("Process started, exiting blocking function.")
+        except multiprocessing.ProcessError:
+            print("Problem starting image snap worker process.")
+            print_exc()
+        return None
+
+    def _video_snapshot_worker(self, duration, snapshot_file_absolute_location):
+        """
+        Executes the video snapshot given the final duration and file location. Meant to run in non-blocking mp.Process.
+        :param duration: duration of video snapshot in seconds
+        :param snapshot_file_absolute_location: absolute file path for video snapshot
+        :return: snapshot_file_absolute_location if successful
+        """
+        try:
+            snapvid_pipeline = self.pipelines_snap[self.video_snap_name]
+            print("Setting filesink location of video snapshot pipeline.")
+            snapvid_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.video_snap_name),
+                                          'location', snapshot_file_absolute_location)
+            print("Playing {} pipeline.".format(self.video_snap_name))
+            snapvid_pipeline.play()
+            print("Waiting for {} seconds of recording time...".format(duration))
+            time.sleep(duration)
+            print("Sending EOS and stop to {} pipeline.".format(self.video_snap_name))
+            snapvid_pipeline.eos()
+            snapvid_pipeline.stop()
+            print("Video snapshot complete to {}.".format(snapshot_file_absolute_location))
+            return snapshot_file_absolute_location
+        except (GstdError, GstcError):
+            print("Problem with video snapshot.")
+            print_exc()
+            return None
 
     def take_video_snapshot(self, duration, file_relative_location, file_absolute_location=None):
         """
@@ -752,14 +801,12 @@ class IngestSession:
         :param duration: duration of video snapshot in seconds (min=5; max=3600)
         :param file_relative_location: relative location (directory + filename) inside session storage directory
         :param file_absolute_location: (overrides relative location) absolute directory + filename
-        :return: absolute file path of snapshot video file, if successful; otherwise None
+        :return: None
         """
         # check if video snapshot pipeline was constructed
         if self.video_snap_name not in self.pipelines_snap:
             warnings.warn("Video snapshot pipeline wasn't constructed. Ignoring command.")
             return None
-        else:
-            snapvid_pipeline = self.pipelines_snap[self.video_snap_name]
         # check duration limits
         if duration > 3600:
             warnings.warn("Video snapshot duration is too high. Limit = 1 hour (3600 seconds). Ignoring command.")
@@ -786,29 +833,22 @@ class IngestSession:
             if not os.path.exists(snap_abs_dir):
                 print("Directory doesn't exist. Making it now.")
                 os.mkdir(snap_abs_dir)
-            snap_abs_fn = os.path.join(snap_abs_dir, snap_fn)
-            print("Setting location of {} pipeline filesink to {}.".format(self.video_snap_name, snap_abs_fn))
-            snapvid_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.video_snap_name),
-                                          'location', snap_abs_fn)
-        except (OSError, GstdError, GstcError):
-            print("Problem with setting video snapshot file location.")
+        except OSError:
+            print("Problem making directory.")
             print_exc()
             return None
-        # play the video snapshot pipeline, send an EOS signal, then stop the pipeline
+        snap_abs_fn = os.path.join(snap_abs_dir, snap_fn)
+
+        vidsnap = multiprocessing.Process(target=self._video_snapshot_worker,
+                                          args=(duration, snap_abs_fn))
+        print("Starting video snapshot worker process.")
         try:
-            print("Playing {} pipeline.".format(self.video_snap_name))
-            snapvid_pipeline.play()
-            print("Waiting for {} seconds of recording time...".format(duration))
-            time.sleep(duration)
-            print("Sending EOS and stop to {} pipeline.".format(self.video_snap_name))
-            snapvid_pipeline.eos()
-            snapvid_pipeline.stop()
-            print("Video snapshot complete to {}.".format(snap_abs_fn))
-        except (GstcError, GstdError):
-            print("Problem playing and completing video shapshot pipeline.")
+            vidsnap.start()
+            print("Process started, exiting blocking function.")
+        except multiprocessing.ProcessError:
+            print("Problem starting video snap worker process.")
             print_exc()
-            return None
-        return snap_abs_fn
+        return None
 
     def stop_all_pipelines(self):
         """
@@ -869,9 +909,10 @@ if __name__ == '__main__':
         session.start_persistent_recording_all_cameras()
         time.sleep(10)
         session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
-        time.sleep(30)
         session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
+        print("Wait 65")
         time.sleep(65)
+        print("Done waiting")
         session.stop_persistent_recording_all_cameras()
     except KeyboardInterrupt:
         print_exc()
