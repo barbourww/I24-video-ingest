@@ -3,3 +3,5 @@ pygobject
 pygstc == 0.2.0
 # for distributed logging
 logbook >= 1.5.3
+# for system resource usage
+psutil

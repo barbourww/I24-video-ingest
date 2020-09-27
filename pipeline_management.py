@@ -4,6 +4,7 @@ from pygstc.gstc import *
 from pygstc.logger import *
 import logbook
 from logbook.queues import MultiProcessingHandler, MultiProcessingSubscriber
+import psutil
 
 import time
 import datetime
@@ -109,7 +110,17 @@ class GstdManager:
             if restart is False:
                 print("Gstreamer Daemon may already be running. Consider stopping or setting `restart=True`.")
     def stop(self):
-        gstd_stop = subprocess.run(['gstd', '--kill'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        print("Attempting to kill GStreamer Daemon.")
+        for i in range(3):
+            try:
+                gstd_stop = subprocess.run(['gstd', '--kill'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           universal_newlines=True, timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                print("Retrying GStreamer Daemon kill.")
+        else:
+            print("Couldn't kill GStreamer Daemon.")
+            return
         if 'no running gstd found' in gstd_stop.stderr.lower():
             print("No running GStreamer Daemon for STOP command.")
 
@@ -316,7 +327,7 @@ class IngestSession:
         # TODO: pass in connection parameters
         self.manager = GstdManager(gst_log=os.path.join(self.session_log_directory, 'gst.log'),
                                    gstd_log=os.path.join(self.session_log_directory, 'gstd.log'),
-                                   gst_debug_level=5, tcp_enable=True, http_enable=False)
+                                   gst_debug_level=9, tcp_enable=True, http_enable=False)
         self.manager.start()
 
     def initialize_gstd_client(self, num_retry=3):
@@ -332,6 +343,9 @@ class IngestSession:
         for i in range(num_retry):
             try:
                 self.client = GstdClient(ip='localhost', port=5000, logger=gstd_py_logger)
+                self.client.debug_threshold(threshold='LOG')
+                self.client.debug_enable(enable=True)
+                # TODO: Gst log still not working correctly
                 break
             except GstcError:
                 time.sleep(1)
@@ -343,6 +357,83 @@ class IngestSession:
             logbook.critical("Problem with Gstreamer Daemon.")
             raise RuntimeError("Could not contact Gstd after {} attempts.".format(num_retry))
         self.client.debug_enable(True)
+
+    def _bus_reader_worker(self, pipeline):
+        logbook.notice("Bus reader worker process started for {}".format(pipeline))
+        self.client.bus_filter(pipe_name=pipeline, filter='qos+progress+element')
+        while True:
+            bus_message = self.client.bus_read(pipe_name=pipeline)
+            logbook.info("Bus message: {}".format(bus_message))
+
+    def start_bus_reader(self, pipes):
+        readers = []
+        logbook.notice("Starting bus readers for pipelines: {}".format(pipes))
+        for pipe in pipes:
+            readers.append(multiprocessing.Process(target=self._bus_reader_worker, args=(pipe,)))
+        for reader in readers:
+            reader.start()
+
+    def get_current_stats(self, get_cpu, get_memory, get_network, get_disk):
+        """
+        
+        """
+        stat_cpu, stat_mem, stat_net, stat_dsk = None, None, None, None
+        if get_cpu is True:
+            try:
+                n_cpu = psutil.cpu_count()
+                per_cpu = psutil.cpu_percent(interval=0.5, percpu=True)
+                stat_cpu = tuple([ld / n_cpu * 100 for ld in psutil.getloadavg()]) + (tuple(per_cpu),)
+            except:
+                logbook.warning("Problem with CPU resource fetch.")
+        if get_memory is True:
+            try:
+                mem_vals = psutil.virtual_memory()
+                stat_mem = (mem_vals.available, mem_vals.total)
+            except:
+                logbook.warning("Problem with memory resource fetch.")
+        if get_network is True:
+            try:
+                net_vals = psutil.net_io_counters(pernic=False, nowrap=True)
+                stat_net = (net_vals.bytes_sent, net_vals.bytes_recv)
+            except:
+                logbook.warning("Problem with network resource fetch.")
+        if get_disk is True:
+            try:
+                dsk_vals = psutil.disk_usage(path=self.session_absolute_directory)
+                stat_dsk = (dsk_vals.used, dsk_vals.free, dsk_vals.total)
+            except:
+                logbook.warning("Problem with disk resource fetch.")
+        # TODO: future -- implement temperature sensor measurements
+        return stat_cpu, stat_mem, stat_net, stat_dsk
+
+    def _resource_monitor_worker(self, log_interval, get_cpu, get_memory, get_network, get_disk):
+        """
+
+        """
+        logbook.notice("Resource monitor started successfully.")
+        while True:
+            cpu, mem, net, dsk = self.get_current_stats(get_cpu=get_cpu, get_memory=get_memory,
+                                                        get_network=get_network, get_disk=get_disk)
+            logbook.info("CPU: {}".format(cpu), channel='Resources')
+            logbook.info("MEMORY: {}".format(mem), channel='Resources')
+            logbook.info("NETWORK: {}".format(net), channel='Resources')
+            logbook.info("DISK: {}".format(dsk), channel='Resources')
+            time.sleep(log_interval)
+
+    def start_resource_monitor(self, log_interval=30, get_cpu=True, get_memory=True, get_network=True, get_disk=True):
+        """
+
+        """
+        if log_interval < 5:
+            logbook.error("Invalid value for `log_interval`. Must be >= 5 seconds.")
+            return
+        # run this once for stats that need to be called once before they're meaningful (may or may not be applicable)
+        self.get_current_stats(get_cpu=get_cpu, get_memory=get_memory, get_network=get_network, get_disk=get_disk)
+        monitor = multiprocessing.Process(target=self._resource_monitor_worker,
+                                          args=(log_interval, get_cpu, get_memory, get_network, get_disk))
+        logbook.notice("Starting resource monitor process.")
+        monitor.start()
+        return
 
     def _construct_camera_pipelines(self):
         """
@@ -370,7 +461,7 @@ class IngestSession:
             logbook.info("Source for camera={}: {}".format(cam_name, cam_source))
             cam_sink = 'interpipesink name={} forward-events=true forward-eos=true sync=false'.format(
                 PIPE_SINK_NAME_FORMATTER.format(cam_name))
-            pd = '{} ! rtph264depay ! h264parse ! queue ! {}'.format(cam_source, cam_sink)
+            pd = '{} ! rtph264depay ! h264parse ! progressreport update-freq=1 ! queue ! {}'.format(cam_source, cam_sink)
             cam = PipelineEntity(self.client, cam_name, pd)
             self.pipelines_cameras[cam_name] = cam
 
@@ -604,6 +695,7 @@ class IngestSession:
             logbook.notice("Starting camera streams.")
             for pipeline_name, pipeline in self.pipelines_cameras.items():
                 print("Starting {}.".format(pipeline_name))
+                self.client.pipeline_verbose(pipe_name=pipeline_name, value=True)
                 pipeline.play()
             time.sleep(5)
             logbook.notice("Camera streams initialized.")
@@ -941,6 +1033,7 @@ def main():
     try:
         session.construct_pipelines()
         session.start_cameras()
+        session.start_bus_reader(pipes=['camera0'])
         session.start_buffers()
         session.start_persistent_recording_all_cameras()
         time.sleep(30)
