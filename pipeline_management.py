@@ -583,6 +583,8 @@ class IngestSession:
                     self.camera_progress_reporters.append(cam_name)
                 else:
                     # report method was 'appsink'
+                    # TODO: one of these settings seems to be creating a memory leak
+                    # TODO: try identity element for frame counting instead?
                     appsink_element = 'appsink name={}_appsink wait-on-eos=false emit-signals=true drop=true'.format(
                         cam_name)
                     report_element = 'tee name=t t. ! queue ! {} t.'.format(appsink_element)
@@ -967,6 +969,7 @@ class IngestSession:
                 # run the snap image pipeline for a bit, not sure if this time matters much
                 snapimg_pipeline.play()
                 time.sleep(IMAGE_SNAP_EXECUTE_TIME)
+                # TODO: need EOS for encode or snap pipeline? Memory impact?
                 snapimg_pipeline.stop()
                 encode_img_pipeline.stop()
                 fns.append(snap_abs_fmt_fn)
