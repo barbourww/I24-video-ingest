@@ -25,7 +25,7 @@ class PipelineEntity(object):
         Creates the pipeline within GStreamer Daemon, but does not start it.
         :param client: GStreamer Daemon client to handle commands
         :param name: pipeline name (used for referencing within GStreamer Daemon
-        :param description: pipeline description - kept by Gstd but not referenced in any way at the moment
+        :param description: pipeline description for construction
         :return: None
         """
         self._name = name
@@ -194,6 +194,7 @@ class IngestSession:
         # camera pipelines are assumed to be named the same as the specified camera name
         self.pipelines_cameras = OrderedDict()          # use OrderedDict to preserve order during snapshots
         self.camera_progress_reporters = []             # names of cameras that send progress reporter bus messages
+        self.camera_counters_to_start = []              # camera frame counter processes that need to be connected
         self.frame_count = {}                           # frame counts for each camera (if requested); key=cam_name
         self.image_encoder_name = 'image_encode'
         self.pipelines_video_enc = {}
@@ -277,7 +278,7 @@ class IngestSession:
                     # reset current block to empty and set its destination
                     current_block = {}
                     block_destination = block_mapping[strip_line]
-                elif '=' in strip_line:
+                elif '==' in strip_line:
                     pkey, pval = strip_line.split('==')
                     current_block[pkey.strip()] = pval.strip()
                 else:
@@ -344,7 +345,7 @@ class IngestSession:
             # camera information
             f.write("Number of cameras initialized: {}".format(len(self.camera_config)))
             for cc in self.camera_config:
-                f.write(cc['name'], cc['rtsp_address'])
+                f.write("{}: {}".format(cc['name'], cc['rtsp_address']))
         return header_filename
 
     def initialize_gstd(self):
@@ -574,7 +575,7 @@ class IngestSession:
             pd = '{} ! rtph264depay ! h264parse ! queue ! {}'.format(cam_source, cam_sink)
             # check if reporting was requested
             if 'report' in single_camera_config and single_camera_config['report'] in ('progressreport', 'appsink'):
-                interval = single_camera_config.get('report_interval', DEFAULT_CAMERA_REPORTING_INTERVAL)
+                interval = int(single_camera_config.get('report_interval', DEFAULT_CAMERA_REPORTING_INTERVAL))
                 if single_camera_config['report'] == 'progressreport':
                     # setting do-query=false so reporting uses metadata
                     # silent=true so not stdout
@@ -582,11 +583,10 @@ class IngestSession:
                     self.camera_progress_reporters.append(cam_name)
                 else:
                     # report method was 'appsink'
-                    report_element = 'tee name={}_tee ! appsink name={}_appsink emit-signals=true {}_tee.'.format(
-                        cam_name, cam_name, cam_name)
-                    fc = multiprocessing.Process(target=self._appsink_frame_counter, args=(interval, cam_name))
-                    fc.start()
-                    self.detached_processes.append(fc)
+                    appsink_element = 'appsink name={}_appsink wait-on-eos=false emit-signals=true drop=true'.format(
+                        cam_name)
+                    report_element = 'tee name=t t. ! queue ! {} t.'.format(appsink_element)
+                    self.camera_counters_to_start.append((cam_name, interval))
                 pd = '{} ! rtph264depay ! h264parse ! {} ! queue ! {}'.format(cam_source, report_element, cam_sink)
                 logbook.info("Progress logging for camera={} every {} seconds".format(cam_name, interval))
             else:
@@ -817,6 +817,7 @@ class IngestSession:
             logbook.critical("Failure during pipeline construction.")
             print_exc()
             self.deconstruct_all_pipelines()
+            self.stop_all_processes()
             self.kill_gstd()
             raise e
 
@@ -828,16 +829,23 @@ class IngestSession:
         try:
             logbook.notice("Starting camera streams.")
             for pipeline_name, pipeline in self.pipelines_cameras.items():
-                print("Starting {}.".format(pipeline_name))
+                logbook.notice("Starting {}.".format(pipeline_name))
                 self.client.pipeline_verbose(pipe_name=pipeline_name, value=True)
                 pipeline.play()
             time.sleep(5)
             logbook.notice("Camera streams initialized.")
-            # check if
+            # check if there are any progress reporter bus readers to connect
             if len(self.camera_progress_reporters) > 0:
                 self.start_bus_readers(pipes=self.camera_progress_reporters)
                 logbook.notice("Automatically started bus readers for progress reports on cameras {}.".format(
                     self.camera_progress_reporters))
+            # check if there are any appsink frame counters to start
+            if len(self.camera_counters_to_start) > 0:
+                for cam_name, interval in self.camera_counters_to_start:
+                    fc = multiprocessing.Process(target=self._appsink_frame_counter, args=(cam_name, interval))
+                    fc.start()
+                    self.detached_processes.append(fc)
+                self.camera_counters_to_start = []
         except (GstcError, GstdError) as e:
             logbook.critical("Could not initialize camera streams.")
             print_exc()
@@ -855,7 +863,7 @@ class IngestSession:
         try:
             logbook.notice("Starting camera stream buffers for video snapshot.")
             for pipeline_name, pipeline in self.pipelines_video_buffer.items():
-                print("Starting {}.".format(pipeline_name))
+                logbook.notice("Starting {}.".format(pipeline_name))
                 pipeline.play()
             time.sleep(1)
             logbook.notice("Camera stream buffers initialized.")
@@ -1168,7 +1176,8 @@ class IngestSession:
 
 
 def main():
-    session = IngestSession(session_root_directory='/home/dev/Videos/ingest_pipeline',
+    # '/home/dev/Videos/ingest_pipeline'
+    session = IngestSession(session_root_directory='/media/dev/Data_HDD1/Axis_video',
                             session_config_file='./sample.config')
     try:
         # session.start_resource_monitor(log_interval=10)
