@@ -18,9 +18,16 @@ from collections import OrderedDict
 
 class PipelineEntity(object):
     """
-
+    Abstraction class for a single pipeline that is constructed by the GStreamer Daemon client.
     """
     def __init__(self, client, name, description):
+        """
+        Creates the pipeline within GStreamer Daemon, but does not start it.
+        :param client: GStreamer Daemon client to handle commands
+        :param name: pipeline name (used for referencing within GStreamer Daemon
+        :param description: pipeline description - kept by Gstd but not referenced in any way at the moment
+        :return: None
+        """
         self._name = name
         self._description = description
         self._client = client
@@ -31,30 +38,30 @@ class PipelineEntity(object):
         return self._name
 
     def play(self):
-        print("Playing pipeline: " + self._name)
         self._client.pipeline_play(self._name)
+        logbook.debug("Played pipeline: {}".format(self._name))
     
     def stop(self):
-        print("Stopping pipeline: " + self._name)
         self._client.pipeline_stop(self._name)
+        logbook.debug("Stopped pipeline: {}".format(self._name))
     
     def delete(self):
-        print("Deleting pipeline: " + self._name)
         self._client.pipeline_delete(self._name)
+        logbook.debug("Deleted pipeline: {}".format(self._name))
     
     def eos(self):
-        print("Sending EOS to pipeline: " + self._name)
         self._client.event_eos(self._name)
+        logbook.debug("EOS'd pipeline: {}".format(self._name))
     
     def set_property(self, element_name, property_name, property_value):
-        print("Setting {} property to {}; element {} inside pipeline {}".format(
-            property_name, property_value, element_name, self._name))
         self._client.element_set(self._name, element_name, property_name, property_value)
-    
+        logbook.debug("Set {} property to {}; element {} inside pipeline {}".format(
+            property_name, property_value, element_name, self._name))
+
     def listen_to(self, sink):
-        print(self._name + " pipeline listening to " + sink)
         # interpipesrc element is named according to parameters.PIPE_SOURCE_NAME_FORMATTER
         self._client.element_set(self._name, PIPE_SOURCE_NAME_FORMATTER.format(self._name), 'listen-to', sink)
+        logbook.debug("Set {} pipeline listening to {}".format(self._name, sink))
 
 
 class GstdManager:
@@ -115,6 +122,7 @@ class GstdManager:
             try:
                 gstd_stop = subprocess.run(['gstd', '--kill'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                            universal_newlines=True, timeout=5)
+                print("GStreamer Daemon stopped.")
                 break
             except subprocess.TimeoutExpired:
                 print("Retrying GStreamer Daemon kill.")
@@ -133,12 +141,13 @@ class IngestSession:
     """
     def __init__(self, session_root_directory, session_config_file):
         """
-
-        :param session_root_directory:
-        :param session_config_file:
+        Construction a video ingest session that will handle camera streaming, recording, snapshots, etc. The session
+            should be persistent and not left open without continual handling. Allowing it to detach from Python would
+            require command line interaction with GStreamer Deamon (e.g., `gstd -k` to kill everything).
+        :param session_root_directory: root directory at which to place session directory
+        :param session_config_file: configuration file describing session elements and parameters
         :return: None
         """
-
 
         # determine session number and root directory
         self.this_session_number = self._next_session_number(session_root_directory)
@@ -154,7 +163,7 @@ class IngestSession:
 
         # set up logging that will be used by all processes
         # multiprocessing.set_start_method('spawn')
-        self.logqueue = multiprocessing.Queue(-1) # TODO: what is -1?
+        self.logqueue = multiprocessing.Queue(-1)
         self.handler, self.sub = None, None     # initialize these to None; they'll be set in self._setup_logging()
         self._setup_logging()
         logbook.notice("Next session number according to session root directory: {}".format(self.this_session_number))
@@ -183,7 +192,9 @@ class IngestSession:
         # locations to store pipelines {pipeline_name: PipelineEntity, ...}
         # pre-define names for certain pipelines that will be references later for control
         # camera pipelines are assumed to be named the same as the specified camera name
-        self.pipelines_cameras = OrderedDict()
+        self.pipelines_cameras = OrderedDict()          # use OrderedDict to preserve order during snapshots
+        self.camera_progress_reporters = []             # names of cameras that send progress reporter bus messages
+        self.frame_count = {}                           # frame counts for each camera (if requested); key=cam_name
         self.image_encoder_name = 'image_encode'
         self.pipelines_video_enc = {}
         self.pipelines_video_buffer = {}
@@ -193,15 +204,25 @@ class IngestSession:
         self.image_snap_name = 'snap_image'
         self.pipelines_snap = {}
 
-    def _setup_logging(self, level=logbook.DEBUG):
+        # location to store continually-running processes that need to be stopped on exit
+        self.detached_processes = []
+
+    def _setup_logging(self, file_level=logbook.DEBUG, stderr_level=logbook.NOTICE):
+        """
+        Sets up multiprocess logging so that parallel processes can also write to log. Currently implemented loggers are
+            timed-rotating-file (turns over each day and keeps only a few files), stderr messages.
+        :param file_level: logging level to record to file
+        :param stderr_level: logging level to report in stderr
+        :return: None
+        """
         self.handler = MultiProcessingHandler(self.logqueue)
         self.handler.push_application()
         target_handlers = logbook.NestedSetup([
             logbook.NullHandler(),
-            logbook.StderrHandler(level=logbook.INFO,
+            logbook.StderrHandler(level=stderr_level,
                                   format_string='{record.time:%Y-%m-%d %H:%M:%S}|{record.level_name}|{record.message}'),
             logbook.TimedRotatingFileHandler(filename=os.path.join(self.session_log_directory, 'manager.log'),
-                                             level=level, bubble=True,
+                                             level=file_level, bubble=True,
                                              date_format='%Y-%m-%d', timed_filename_for_current=True,
                                              backup_count=5, rollover_format='{basename}-{timestamp}{ext}')
         ])
@@ -301,6 +322,10 @@ class IngestSession:
         return copy_filename
 
     def _write_session_header_file(self):
+        """
+        Writes high-level information to header file in session directory.
+        :return: header filename
+        """
         header_filename = os.path.join(self.session_absolute_directory, '_SESSION_INFO.txt')
         with open(header_filename, 'w') as f:
             f.write("SESSION #{}".format(self.this_session_number))
@@ -315,8 +340,11 @@ class IngestSession:
             utctimenow = datetime.datetime.utcnow()
             unix_utctimenow = (utctimenow - datetime.datetime(year=1970, month=1, day=1)).total_seconds()
             f.write("\nSession initialization time (UTC): {} (UNIX: {})".format(utctimenow, unix_utctimenow))
+            f.write("-" * 50)
             # camera information
-            # TODO: put in config information for cameras, recording, etc
+            f.write("Number of cameras initialized: {}".format(len(self.camera_config)))
+            for cc in self.camera_config:
+                f.write(cc['name'], cc['rtsp_address'])
         return header_filename
 
     def initialize_gstd(self):
@@ -359,23 +387,78 @@ class IngestSession:
         self.client.debug_enable(True)
 
     def _bus_reader_worker(self, pipeline):
+        """
+        Perpetually reads the bus of a specific pipeline and logs messages. Meant to be run in detached process.
+            Only qos+element messages are filtered through right now.
+        :return: None
+        """
         logbook.notice("Bus reader worker process started for {}".format(pipeline))
-        self.client.bus_filter(pipe_name=pipeline, filter='qos+progress+element')
+        self.client.bus_filter(pipe_name=pipeline, filter='qos+element')
         while True:
             bus_message = self.client.bus_read(pipe_name=pipeline)
             logbook.info("Bus message: {}".format(bus_message))
 
-    def start_bus_reader(self, pipes):
+    def start_bus_readers(self, pipes):
+        """
+        Starts a bus reader process for each pipeline. Adds these to the processes that need to be stopped on exit.
+        :param pipes: list of pipeline names for which to start bus readers.
+        :return: None
+        """
         readers = []
         logbook.notice("Starting bus readers for pipelines: {}".format(pipes))
         for pipe in pipes:
             readers.append(multiprocessing.Process(target=self._bus_reader_worker, args=(pipe,)))
         for reader in readers:
             reader.start()
+        self.detached_processes += readers
 
-    def get_current_stats(self, get_cpu, get_memory, get_network, get_disk):
+    def _appsink_frame_counter(self, camera_name, reporting_interval):
         """
-        
+        Connects to the appsink element within a camera stream pipeline and counts frames that are signaled.
+            Reporting is triggered by frame counts, not strictly by time. So if frames aren't streaming, no reports.
+        :param camera_name: name of the camera/pipeline to connect
+        :param reporting_interval: number of seconds between log reports - translated to frame count assuming 30fps
+        """
+        while True:
+            self.client.signal_connect(pipe_name=camera_name, element='{}_appsink'.format(camera_name),
+                                       signal='new-sample')
+            self.frame_count[camera_name] += 1
+            # assume 30 frames per second
+            if self.frame_count[camera_name] % int(reporting_interval * 30) == 0:
+                logbook.info("Camera {} frame count = {}".format(camera_name, self.frame_count))
+
+    def get_recording_file_stats(self):
+        """
+        Walk the directory(s) where the persistent recording is taking place and report the number of files and size.
+        :return: number of total files, total size of all files
+        """
+        file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
+        unformat_dir, unformat_file = os.path.split(file_location)
+        if unformat_dir.startswith('./'):
+            unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
+        recording_dirs = []
+        if '{}' in unformat_dir:
+            for cam_name in self.pipelines_cameras.keys():
+                recording_dirs.append(unformat_dir.format(cam_name))
+        else:
+            recording_dirs.append(unformat_dir)
+        size = 0
+        num = 0
+        for rdir in recording_dirs:
+            if os.path.exists(rdir):
+                for filename in os.listdir(rdir):
+                    size += os.path.getsize(os.path.join(rdir, filename))
+                    num += 1
+        return num, size
+
+    def get_current_resource_stats(self, get_cpu, get_memory, get_network, get_disk):
+        """
+        Fetches current hardware resource statistics.
+        :param get_cpu: T/F fetch CPU stats (1-, 5-, 15- min CPU % avg, (cpu_1, _2, _3, ..., _N current %) )
+        :param get_memory: T/F fetch memory stats (available memory, total memory)
+        :param get_network: T/F fetch network stats (total bytes sent, total bytes received)
+        :param get_disk: T/F fetch disk stats (used, free, total bytes) for disk where session directory is located
+        :return: cpu, memory, network, disk stats
         """
         stat_cpu, stat_mem, stat_net, stat_dsk = None, None, None, None
         if get_cpu is True:
@@ -406,41 +489,67 @@ class IngestSession:
         # TODO: future -- implement temperature sensor measurements
         return stat_cpu, stat_mem, stat_net, stat_dsk
 
-    def _resource_monitor_worker(self, log_interval, get_cpu, get_memory, get_network, get_disk):
+    def _resource_monitor_worker(self, log_interval, get_cpu, get_memory, get_network, get_disk, get_recording_dir):
         """
-
+        Periodically fetches and logs system resource stats.
+        :param log_interval: number of seconds between subsequent resource fetches
+        :param get_cpu: T/F fetch CPU stats (1-, 5-, 15- min CPU % avg, (cpu_1, _2, _3, ..., _N current %) )
+        :param get_memory: T/F fetch memory stats (available memory, total memory)
+        :param get_network: T/F fetch network stats (total bytes sent, total bytes received)
+        :param get_disk: T/F fetch disk stats (used, free, total bytes) for disk where session directory is located
+        :param get_recording_dir: T/F fetch file stats for recording directory (num total files, total bytes)
+        :return: None
         """
         logbook.notice("Resource monitor started successfully.")
         while True:
-            cpu, mem, net, dsk = self.get_current_stats(get_cpu=get_cpu, get_memory=get_memory,
-                                                        get_network=get_network, get_disk=get_disk)
-            logbook.info("CPU: {}".format(cpu), channel='Resources')
-            logbook.info("MEMORY: {}".format(mem), channel='Resources')
-            logbook.info("NETWORK: {}".format(net), channel='Resources')
-            logbook.info("DISK: {}".format(dsk), channel='Resources')
+            cpu, mem, net, dsk = self.get_current_resource_stats(get_cpu=get_cpu, get_memory=get_memory,
+                                                                 get_network=get_network, get_disk=get_disk)
+            # TODO: logging channel args here don't work (propagate into records)
+            if get_cpu is True:
+                logbook.info("CPU: {}".format(cpu), channel='Resources')
+            if get_memory is True:
+                logbook.info("MEMORY: {}".format(mem), channel='Resources')
+            if get_network is True:
+                logbook.info("NETWORK: {}".format(net), channel='Resources')
+            if get_disk is True:
+                logbook.info("DISK: {}".format(dsk), channel='Resources')
+            if get_recording_dir is True:
+                rec = self.get_recording_file_stats()
+                logbook.info("RECORDING: {}".format(rec), channel='Resources')
             time.sleep(log_interval)
 
-    def start_resource_monitor(self, log_interval=30, get_cpu=True, get_memory=True, get_network=True, get_disk=True):
+    def start_resource_monitor(self, log_interval=30, get_cpu=True, get_memory=True, get_network=True, get_disk=True,
+                               get_recording_dir=True):
         """
-
+        Starts a separate (detached) process to periodically fetch and log system resource stats.
+        :param log_interval: number of seconds between subsequent resource fetches
+        :param get_cpu: T/F fetch CPU stats (1-, 5-, 15- min CPU % avg, (cpu_1, _2, _3, ..., _N current %) )
+        :param get_memory: T/F fetch memory stats (available memory, total memory)
+        :param get_network: T/F fetch network stats (total bytes sent, total bytes received)
+        :param get_disk: T/F fetch disk stats (used, free, total bytes) for disk where session directory is located
+        :param get_recording_dir: T/F fetch file stats for recording directory (num total files, total bytes)
+        :return: None
         """
         if log_interval < 5:
             logbook.error("Invalid value for `log_interval`. Must be >= 5 seconds.")
             return
         # run this once for stats that need to be called once before they're meaningful (may or may not be applicable)
-        self.get_current_stats(get_cpu=get_cpu, get_memory=get_memory, get_network=get_network, get_disk=get_disk)
+        self.get_current_resource_stats(get_cpu=get_cpu, get_memory=get_memory,
+                                        get_network=get_network, get_disk=get_disk)
         monitor = multiprocessing.Process(target=self._resource_monitor_worker,
-                                          args=(log_interval, get_cpu, get_memory, get_network, get_disk))
+                                          args=(log_interval, get_cpu, get_memory, get_network,
+                                                get_disk, get_recording_dir))
         logbook.notice("Starting resource monitor process.")
         monitor.start()
-        return
+        self.detached_processes.append(monitor)
+        return None
 
     def _construct_camera_pipelines(self):
         """
         # ----------------------------------------------------------------------------------------------------------
         # Each camera pipeline is independent, and constructed as follows.
         #
-        #  rtspsrc --> rtph264depay --> h264parse --> queue --> interpipesink
+        #  rtspsrc --> rtph264depay --> h264parse --> progressreport (optional) --> queue --> interpipesink
         #
         # ----------------------------------------------------------------------------------------------------------
         """
@@ -461,9 +570,31 @@ class IngestSession:
             logbook.info("Source for camera={}: {}".format(cam_name, cam_source))
             cam_sink = 'interpipesink name={} forward-events=true forward-eos=true sync=false'.format(
                 PIPE_SINK_NAME_FORMATTER.format(cam_name))
-            pd = '{} ! rtph264depay ! h264parse ! progressreport update-freq=1 ! queue ! {}'.format(cam_source, cam_sink)
+            # default no reporting; this will get overwritten if reporting is requested
+            pd = '{} ! rtph264depay ! h264parse ! queue ! {}'.format(cam_source, cam_sink)
+            # check if reporting was requested
+            if 'report' in single_camera_config and single_camera_config['report'] in ('progressreport', 'appsink'):
+                interval = single_camera_config.get('report_interval', DEFAULT_CAMERA_REPORTING_INTERVAL)
+                if single_camera_config['report'] == 'progressreport':
+                    # setting do-query=false so reporting uses metadata
+                    # silent=true so not stdout
+                    report_element = 'progressreport update-freq={} do-query=false silent=true'.format(interval)
+                    self.camera_progress_reporters.append(cam_name)
+                else:
+                    # report method was 'appsink'
+                    report_element = 'tee name={}_tee ! appsink name={}_appsink emit-signals=true {}_tee.'.format(
+                        cam_name, cam_name, cam_name)
+                    fc = multiprocessing.Process(target=self._appsink_frame_counter, args=(interval, cam_name))
+                    fc.start()
+                    self.detached_processes.append(fc)
+                pd = '{} ! rtph264depay ! h264parse ! {} ! queue ! {}'.format(cam_source, report_element, cam_sink)
+                logbook.info("Progress logging for camera={} every {} seconds".format(cam_name, interval))
+            else:
+                logbook.info("No progress logging for camera={}.".format(cam_name))
             cam = PipelineEntity(self.client, cam_name, pd)
             self.pipelines_cameras[cam_name] = cam
+            # initialize frame counter for this camera, even if there's no reporting
+            self.frame_count[cam_name] = 0
 
     def _construct_persistent_recording_pipeline(self):
         """
@@ -496,7 +627,10 @@ class IngestSession:
         file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
         # split path location into directory and filename
         file_dir, file_name = os.path.split(file_location)
-        file_dir = os.path.join(self.session_absolute_directory, file_dir)
+        if file_dir.startswith('./'):
+            file_dir = os.path.join(self.session_absolute_directory, file_dir[2:])
+        else:
+            logbook.warning("Absolute directory implied for persistent recording location.")
         # check that the file number formatter is present
         if '%d' not in file_name and not any(['%0{}d'.format(i) in file_name for i in range(10)]):
             logbook.critical("Problem with recording configuration.")
@@ -658,25 +792,25 @@ class IngestSession:
         try:
             # Create camera pipelines
             # ----------------------------------------------------------------------------------------------------------
-            logbook.notice("\nCREATING CAMERA PIPELINES")
+            logbook.notice("CREATING CAMERA PIPELINES")
             self._construct_camera_pipelines()
 
             # H.264 recording via MPEG4 container mux to parallel streams
             # ----------------------------------------------------------------------------------------------------------
             if len(self.recording_config) > 0 and self.recording_config.get('enable', 'false').lower() == 'true':
-                logbook.notice("\nCREATING PERSISTENT RECORDING PIPELINES")
+                logbook.notice("CREATING PERSISTENT RECORDING PIPELINES")
                 self._construct_persistent_recording_pipeline()
 
             # Camera FIFO historical video buffers for video snapshot capability
             # ----------------------------------------------------------------------------------------------------------
             if len(self.video_snap_config) > 0 and self.video_snap_config.get('enable', 'false').lower() == 'true':
-                logbook.notice("\nCREATING BUFFER PIPELINES")
+                logbook.notice("CREATING BUFFER PIPELINES")
                 self._construct_buffered_video_snapshot_pipeline()
 
             # H.264 to still image transcoder for image snapshot capability
             # ----------------------------------------------------------------------------------------------------------
             if len(self.image_snap_config) > 0 and self.image_snap_config.get('enable', 'false').lower() == 'true':
-                logbook.notice("\nCREATING STILL IMAGE ENCODER PIPELINE")
+                logbook.notice("CREATING STILL IMAGE ENCODER PIPELINE")
                 self._construct_image_snapshot_pipeline()
 
         except (GstcError, GstdError) as e:
@@ -688,7 +822,7 @@ class IngestSession:
 
     def start_cameras(self):
         """
-        Start each camera stream pipeline. Raises error if unsuccessful.
+        Start each camera stream pipeline. Raises error if unsuccessful. Also starts progress reporter bus readers.
         :return: None
         """
         try:
@@ -699,10 +833,17 @@ class IngestSession:
                 pipeline.play()
             time.sleep(5)
             logbook.notice("Camera streams initialized.")
+            # check if
+            if len(self.camera_progress_reporters) > 0:
+                self.start_bus_readers(pipes=self.camera_progress_reporters)
+                logbook.notice("Automatically started bus readers for progress reports on cameras {}.".format(
+                    self.camera_progress_reporters))
         except (GstcError, GstdError) as e:
             logbook.critical("Could not initialize camera streams.")
             print_exc()
+            self.stop_all_pipelines()
             self.deconstruct_all_pipelines()
+            self.stop_all_processes()
             self.kill_gstd()
             raise e
 
@@ -729,30 +870,22 @@ class IngestSession:
         Sets the persistent recording filename from the configuration file and starts the recording.
         :return: recording locations (with numbering formatter %0Nd) if successful; otherwise None
         """
-        # get the location for the recordings
-        # already checked for camera formatter and file number formatter in config parser
-        # also already made the necessary directories
-        # not allowed to change this persistent recording location for consistency across start/stops
+        # # get the location for the recordings
+        # # already checked for camera formatter and file number formatter in config parser
+        # # also already made the necessary directories
+        # # not allowed to change this persistent recording location for consistency across start/stops
         file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
         unformat_dir, unformat_file = os.path.split(file_location)
+        if unformat_dir.startswith('./'):
+            unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
+        else:
+            logbook.warning("Absolute directory implied for persistent recording location.")
         fns = []
-        try:
-            # for each camera: format the filename, then set location param inside the pipeline splitmuxsink
-            for cam_name in self.pipelines_cameras.keys():
-                format_dir = (unformat_dir.format(cam_name) if '{}' in unformat_dir else unformat_dir)
-                format_file = (unformat_file.format(cam_name) if '{}' in unformat_file else unformat_file)
-                # by this point the file portion of the path has already been checked to contain '%0Nd'
-                format_full_path = os.path.join(format_dir, format_file)
-                # >> RIGHT NOW THESE ARE BEING SET IN THE PIPELINE CONSTRUCTION
-                # print("Setting file location for {} to {}.".format(cam_name, format_full_path))
-                # self.pipelines_video_rec[self.persistent_record_name].set_property(
-                #     'multisink_{}'.format(cam_name), 'location', format_full_path)
-                fns.append(format_full_path)
-        except (GstcError, GstdError) as e:
-            logbook.error("Could not set camera recording locations. Failed on {}".format(cam_name))
-            print_exc()
-            return None
-        logbook.notice("Set file locations for all {} cameras.".format(len(self.pipelines_cameras)))
+        for cam_name in self.pipelines_cameras.keys():
+            format_dir = (unformat_dir.format(cam_name) if '{}' in unformat_dir else unformat_dir)
+            format_file = (unformat_file.format(cam_name) if '{}' in unformat_file else unformat_file)
+            format_full_path = os.path.join(format_dir, format_file)
+            fns.append(format_full_path)
         # start the whole recording pipeline
         logbook.notice("Starting recording.")
         try:
@@ -826,7 +959,6 @@ class IngestSession:
                 # run the snap image pipeline for a bit, not sure if this time matters much
                 snapimg_pipeline.play()
                 time.sleep(IMAGE_SNAP_EXECUTE_TIME)
-                # TODO: EOS encoder?
                 snapimg_pipeline.stop()
                 encode_img_pipeline.stop()
                 fns.append(snap_abs_fmt_fn)
@@ -1018,6 +1150,14 @@ class IngestSession:
                     logbook.warning("Exception while deleting {}.".format(pipeline_name))
                     print_exc()
 
+    def stop_all_processes(self):
+        """
+        Stops all persistent/detached processes from session. These should have been added to self.detached_processes.
+        :return: None
+        """
+        for proc in self.detached_processes:
+            proc.terminate()
+
     def kill_gstd(self):
         """
         Stops the GstdManager that was instantiated for this IngestSession.
@@ -1031,23 +1171,24 @@ def main():
     session = IngestSession(session_root_directory='/home/dev/Videos/ingest_pipeline',
                             session_config_file='./sample.config')
     try:
+        # session.start_resource_monitor(log_interval=10)
+        # time.sleep(15)
         session.construct_pipelines()
         session.start_cameras()
-        session.start_bus_reader(pipes=['camera0'])
         session.start_buffers()
         session.start_persistent_recording_all_cameras()
-        time.sleep(30)
-        session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
-        session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
-        print("Wait 65")
         time.sleep(65)
-        print("Done waiting")
-        session.stop_persistent_recording_all_cameras()
+        session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
+        while True:
+            session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
+            time.sleep(900)
     except KeyboardInterrupt:
         print_exc()
+        session.stop_persistent_recording_all_cameras()
     finally:
         session.stop_all_pipelines()
         session.deconstruct_all_pipelines()
+        session.stop_all_processes()
         session.kill_gstd()
 
 if __name__ == '__main__':

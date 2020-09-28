@@ -51,3 +51,7 @@ IMAGE_ENCODE_SPIN_UP = 3.0
 # image snap pipeline execute time
 # --------------------------------
 IMAGE_SNAP_EXECUTE_TIME = 2.0
+
+# default camera stream reporting interval
+# ----------------------------------------
+DEFAULT_CAMERA_REPORTING_INTERVAL = 15
