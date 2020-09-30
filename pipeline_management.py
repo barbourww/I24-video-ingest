@@ -425,8 +425,8 @@ class IngestSession:
                                        signal='new-sample')
             self.frame_count[camera_name] += 1
             # assume 30 frames per second
-            if self.frame_count[camera_name] % int(reporting_interval * 30) == 0:
-                logbook.info("Camera {} frame count = {}".format(camera_name, self.frame_count))
+            if self.frame_count[camera_name] % reporting_interval == 0:
+                logbook.info("FRAMES: Camera {} frame count = {}".format(camera_name, self.frame_count))
 
     def get_recording_file_stats(self):
         """
@@ -585,8 +585,8 @@ class IngestSession:
                     # report method was 'appsink'
                     # TODO: one of these settings seems to be creating a memory leak
                     # TODO: try identity element for frame counting instead?
-                    appsink_element = 'appsink name={}_appsink wait-on-eos=false emit-signals=true drop=true'.format(
-                        cam_name)
+                    appsink_element = 'appsink name={} max-buffers=100 wait-on-eos=false emit-signals=true drop=true'.format(
+                        '{}_appsink'.format(cam_name))
                     report_element = 'tee name=t t. ! queue ! {} t.'.format(appsink_element)
                     self.camera_counters_to_start.append((cam_name, interval))
                 pd = '{} ! rtph264depay ! h264parse ! {} ! queue ! {}'.format(cam_source, report_element, cam_sink)
@@ -1180,27 +1180,28 @@ class IngestSession:
 
 def main():
     # '/home/dev/Videos/ingest_pipeline'
-    session = IngestSession(session_root_directory='/media/dev/Data_HDD1/Axis_video',
+    # '/media/dev/Data_HDD1/Axis_video'
+    session = IngestSession(session_root_directory='/home/dev/Videos/ingest_pipeline',
                             session_config_file='./sample.config')
     try:
-        # session.start_resource_monitor(log_interval=10)
+        session.start_resource_monitor(log_interval=10)
         # time.sleep(15)
         session.construct_pipelines()
         session.start_cameras()
         session.start_buffers()
         session.start_persistent_recording_all_cameras()
-        time.sleep(65)
-        session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
-        while True:
-            session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
-            time.sleep(900)
+        time.sleep(900)
+        # session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
+        # while True:
+        #     session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
+        #     time.sleep(900)
     except KeyboardInterrupt:
         print_exc()
         session.stop_persistent_recording_all_cameras()
     finally:
+        session.stop_all_processes()
         session.stop_all_pipelines()
         session.deconstruct_all_pipelines()
-        session.stop_all_processes()
         session.kill_gstd()
 
 if __name__ == '__main__':
