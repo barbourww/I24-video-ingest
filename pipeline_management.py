@@ -367,12 +367,12 @@ class IngestSession:
         :return: None
         """
         # TODO: pass in connection parameters or connection mode
-        gstd_py_logger = CustomLogger(logname='ingest_log', loglevel='DEBUG',
+        gstd_py_logger = CustomLogger(logname='ingest_log', loglevel='INFO',
                                       logfile=os.path.join(self.session_log_directory, 'pygstc.log'))
         for i in range(num_retry):
             try:
                 self.client = GstdClient(ip='localhost', port=5000, logger=gstd_py_logger)
-                self.client.debug_threshold(threshold='LOG')
+                self.client.debug_threshold(threshold='DEBUG')
                 self.client.debug_enable(enable=True)
                 # TODO: Gst log still not working correctly
                 break
@@ -387,28 +387,35 @@ class IngestSession:
             raise RuntimeError("Could not contact Gstd after {} attempts.".format(num_retry))
         self.client.debug_enable(True)
 
-    def _bus_reader_worker(self, pipeline):
+    def _bus_reader_worker(self, pipeline, bus_filters):
         """
         Perpetually reads the bus of a specific pipeline and logs messages. Meant to be run in detached process.
             Only qos+element messages are filtered through right now.
         :return: None
         """
-        logbook.notice("Bus reader worker process started for {}".format(pipeline))
-        self.client.bus_filter(pipe_name=pipeline, filter='qos+element')
+        logbook.notice("Bus reader worker process started for pipeline {} with filters {}".format(
+            pipeline, bus_filters))
+        self.client.bus_filter(pipe_name=pipeline, filter=bus_filters)
         while True:
             bus_message = self.client.bus_read(pipe_name=pipeline)
             logbook.info("Bus message: {}".format(bus_message))
 
-    def start_bus_readers(self, pipes):
+    def start_bus_readers(self, pipes, filters):
         """
         Starts a bus reader process for each pipeline. Adds these to the processes that need to be stopped on exit.
         :param pipes: list of pipeline names for which to start bus readers.
         :return: None
         """
+        if type(pipes) not in (tuple, list) or type(filters) not in (tuple, list):
+            logbook.error("Arguments `pipes` and `filters` must be iterable (i.e., tuple, list). Disregarding command.")
+            return
+        if len(pipes) != len(filters):
+            logbook.error("Arguments `pipes` and `filters` must be the same length. Got {} and {}.".format(
+                len(pipes), len(filters)))
         readers = []
         logbook.notice("Starting bus readers for pipelines: {}".format(pipes))
-        for pipe in pipes:
-            readers.append(multiprocessing.Process(target=self._bus_reader_worker, args=(pipe,)))
+        for pipe, filter in zip(pipes, filters):
+            readers.append(multiprocessing.Process(target=self._bus_reader_worker, args=(pipe, filter)))
         for reader in readers:
             reader.start()
         self.detached_processes += readers
@@ -532,7 +539,7 @@ class IngestSession:
         :return: None
         """
         if log_interval < 5:
-            logbook.error("Invalid value for `log_interval`. Must be >= 5 seconds.")
+            logbook.error("Invalid value for `log_interval`. Must be >= 5 seconds. Disregarding command.")
             return
         # run this once for stats that need to be called once before they're meaningful (may or may not be applicable)
         self.get_current_resource_stats(get_cpu=get_cpu, get_memory=get_memory,
@@ -791,6 +798,7 @@ class IngestSession:
         Construct all pipelines based on the configuration variables for this session.
         :return: None
         """
+        # TODO: need to think about interpipe parameters more (i.e., forwarding EOS, sync, etc.)
         try:
             # Create camera pipelines
             # ----------------------------------------------------------------------------------------------------------
@@ -836,9 +844,16 @@ class IngestSession:
                 pipeline.play()
             time.sleep(5)
             logbook.notice("Camera streams initialized.")
+            # start bus readers for rtspsrc elements
+            if False:
+                for pipeline_name in self.pipelines_cameras.keys():
+                    self.client.pipeline_verbose(pipe_name=pipeline_name, value=True)
+                self.start_bus_readers(pipes=list(self.pipelines_cameras.keys()),
+                                       filters=['element' for _ in self.pipelines_cameras])
             # check if there are any progress reporter bus readers to connect
             if len(self.camera_progress_reporters) > 0:
-                self.start_bus_readers(pipes=self.camera_progress_reporters)
+                self.start_bus_readers(pipes=self.camera_progress_reporters,
+                                       filters=['element' for _ in self.camera_progress_reporters])
                 logbook.notice("Automatically started bus readers for progress reports on cameras {}.".format(
                     self.camera_progress_reporters))
             # check if there are any appsink frame counters to start
@@ -1190,11 +1205,12 @@ def main():
         session.start_cameras()
         session.start_buffers()
         session.start_persistent_recording_all_cameras()
-        time.sleep(900)
+        # time.sleep(300)
         # session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
-        # while True:
-        #     session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
-        #     time.sleep(900)
+        while True:
+            if session.image_snap_config.get('enable', 'false').lower() == 'true':
+                session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
+            time.sleep(900)
     except KeyboardInterrupt:
         print_exc()
         session.stop_persistent_recording_all_cameras()
