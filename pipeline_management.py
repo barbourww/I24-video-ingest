@@ -645,14 +645,14 @@ class IngestSession:
             logbook.critical("Problem with recording configuration.")
             raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
         # check if we need to create camera-specific directories, or just one directory
-        if '{}' in file_dir:
+        if '{cam_name}' in file_dir:
             create_dirs = [file_dir.format(cam_name) for cam_name in self.pipelines_cameras.keys()]
-        elif '{}' in file_name:
+        elif '{cam_name}' in file_name:
             create_dirs = [file_dir]
         else:
             # didn't find a camera name placeholder in either the file_dir or the file_name
             logbook.critical("Problem with recording configuration.")
-            raise AttributeError("Need to camera name placeholder ('{}') in recording filename template.")
+            raise AttributeError("Need to camera name placeholder ('{cam_name}') in recording filename template.")
         # create the necessary directories if they don't exist
         try:
             for create_dir in create_dirs:
@@ -895,11 +895,14 @@ class IngestSession:
         Sets the persistent recording filename from the configuration file and starts the recording.
         :return: recording locations (with numbering formatter %0Nd) if successful; otherwise None
         """
-        # # get the location for the recordings
-        # # already checked for camera formatter and file number formatter in config parser
-        # # also already made the necessary directories
-        # # not allowed to change this persistent recording location for consistency across start/stops
+        # get the location for the recordings
+        # already checked for camera formatter and file number formatter in config parser
+        # also already made the necessary directories
+        # not allowed to change this persistent recording location for consistency across start/stops
         file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
+        if '{cam_name}' not in file_location:
+            logbook.error("Camera name placeholder required in persistent recording filename. Reverting to default.")
+            file_location = DEFAULT_RECORDING_FILENAME
         unformat_dir, unformat_file = os.path.split(file_location)
         if unformat_dir.startswith('./'):
             unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
@@ -907,8 +910,8 @@ class IngestSession:
             logbook.warning("Absolute directory implied for persistent recording location.")
         fns = []
         for cam_name in self.pipelines_cameras.keys():
-            format_dir = (unformat_dir.format(cam_name) if '{}' in unformat_dir else unformat_dir)
-            format_file = (unformat_file.format(cam_name) if '{}' in unformat_file else unformat_file)
+            format_dir = (unformat_dir.format(cam_name=cam_name) if '{cam_name}' in unformat_dir else unformat_dir)
+            format_file = (unformat_file.format(cam_name=cam_name) if '{cam_name}' in unformat_file else unformat_file)
             format_full_path = os.path.join(format_dir, format_file)
             fns.append(format_full_path)
         # start the whole recording pipeline
@@ -944,8 +947,8 @@ class IngestSession:
         Executes the image snapshot given the final camera list and file location information.
             Meant to run in non-blocking mp.Process.
         :param camera_list: list of camera names to snapshot (list of strings assembled in calling function)
-        :param snap_abs_dir: absolute directory for snapshot storage (optional '{}' formatter for camera name)
-        :param snap_fn: snapshot file name (optional '{}' for camera name, requirement checked in calling function)
+        :param snap_abs_dir: absolute directory for snapshot storage (optional '{xyz}' formatters)
+        :param snap_fn: snapshot file name (optional '{xyz}' formatters)
         :return: list of successful image snapshot filenames, if any (list can be empty)
         """
         # get the image snap and image encode pipelines
@@ -957,16 +960,20 @@ class IngestSession:
         for camera_name in camera_list:
             try:
                 # add in camera name to directory if needed
-                snap_abs_fmt_dir = (snap_abs_dir if '{}' not in snap_abs_dir else snap_abs_dir.format(camera_name))
+                snap_abs_fmt_dir = snap_abs_dir.format(
+                    cam_name=camera_name, datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
+                    datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()), datetime_unix=time.time())
                 # make the directory if it doesn't exist
                 if not os.path.exists(snap_abs_fmt_dir):
                     logbook.notice("Making directory: {}".format(snap_abs_fmt_dir))
                     os.mkdir(snap_abs_fmt_dir)
                 # join the formatted absolute directory and the formatted (if applicable) filename
-                snap_abs_fmt_fn = os.path.join(snap_abs_fmt_dir,
-                                               (snap_fn if '{}' not in snap_fn else snap_fn.format(camera_name)))
+                snap_abs_fmt_fn = os.path.join(snap_abs_fmt_dir, snap_fn.format(
+                    cam_name=camera_name, datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
+                    datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()), datetime_unix=time.time()))
                 # set the location of the filesink in the image snap pipeline
-                logbook.info("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name, snap_abs_fmt_fn))
+                logbook.info("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name,
+                                                                                      snap_abs_fmt_fn))
                 snapimg_pipeline.set_property(PIPE_SINGLE_FILESINK_NAME_FORMATTER.format(self.image_snap_name),
                                               'location', snap_abs_fmt_fn)
             except (OSError, GstcError, GstdError):
@@ -996,13 +1003,16 @@ class IngestSession:
         logbook.notice("Snapshots: {}".format(fns))
         return fns
 
-    def take_image_snapshot(self, file_relative_location, file_absolute_location=None, cameras='all'):
+    def take_image_snapshot(self, file_relative_location=None, file_absolute_location=None, cameras='all'):
         """
         Takes a still image snapshot of each camera specified. They are taken one at a time in order to avoid spinning
             up numerous H.264->still transcoding pipelines. Failure of one snapshot will not prevent the others.
         :param file_relative_location: location inside session directory to store snapshots; if more than one camera
-            is specified, then '{}' placeholder must be included in directory or filename portion for camera name
-        :param file_absolute_location: same as relative location, but setting this != None automatically overrides it
+            is specified, then '{cam_name}' placeholder must be in directory or filename portion for camera name; other
+            valid placeholders are '{datetime_local}' = ISO format local datetime, '{datetime_utc}' = ISO format UTC
+            datetime, and '{datetime_unix}' = UNIX timestamp
+        :param file_absolute_location: same as relative location, but setting this != None automatically overrides it;
+            see `file_relative_location` for valid placeholder descriptions
         :param cameras: cameras to snapshot; 'all'=all cameras; list/tuple of camera names; ','-sep. str of camera names
         :return: None
         """
@@ -1030,13 +1040,22 @@ class IngestSession:
         logbook.notice("Snapping cameras: {}".format(camlist))
         # set the directory and filename from the absolute or relative parameters given
         if file_absolute_location is None:
-            snap_dir, snap_fn = os.path.split(file_relative_location)
-            snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
+            if file_relative_location is None:
+                snap_dir, snap_fn = os.path.split(DEFAULT_IMAGE_SNAPSHOT_FILENAME)
+            else:
+                snap_dir, snap_fn = os.path.split(file_relative_location)
+            # check for './' at the start of the filename and compensate
+            if snap_dir.startswith('./'):
+                snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir[2:])
+            elif snap_dir.startswith('/'):
+                snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir[1:])
+            else:
+                snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
         else:
             snap_abs_dir, snap_fn = os.path.split(file_absolute_location)
         # check if there are multiple cameras and make sure the placeholder is included
-        if len(camlist) > 1 and ('{}' not in snap_fn and '{}' not in snap_abs_dir):
-            logbook.error("More than one camera given for snapshot, but no '{}' in file location. Ignoring command.")
+        if len(camlist) > 1 and ('{cam_name}' not in snap_fn and '{cam_name}' not in snap_abs_dir):
+            logbook.error(">1 camera requested for image snap, but '{cam_name}' not in filename. Ignoring command.")
             return None
 
         imgsnap = multiprocessing.Process(target=self._image_snapshot_worker,
@@ -1054,7 +1073,7 @@ class IngestSession:
         """
         Executes the video snapshot given the final duration and file location. Meant to run in non-blocking mp.Process.
         :param duration: duration of video snapshot in seconds
-        :param snapshot_file_absolute_location: absolute file path for video snapshot
+        :param snapshot_file_absolute_location: absolute file path for video snapshot (only one arg bc muxed video file)
         :return: snapshot_file_absolute_location if successful
         """
         try:
@@ -1076,24 +1095,33 @@ class IngestSession:
             print_exc()
             return None
 
-    def take_video_snapshot(self, duration, file_relative_location, file_absolute_location=None):
+    def take_video_snapshot(self, duration=None, file_relative_location=None, file_absolute_location=None):
         """
         Takes a snapshot of video from each camera, beginning with the buffered backlog of video. This allows the
             video snapshot trigger to grab video from a little while ago. Buffer length specified in config file.
-        :param duration: duration of video snapshot in seconds (min=5; max=3600)
-        :param file_relative_location: relative location (directory + filename) inside session storage directory
-        :param file_absolute_location: (overrides relative location) absolute directory + filename
+        :param duration: duration of video snapshot in seconds (min=5; max=3600); order of precendence:
+            1) function args, 2) config file, 3) parameters.py
+        :param file_relative_location: relative location (directory + filename) inside session storage directory; valid
+            filename placeholders are '{datetime_local}' = ISO format local datetime, '{datetime_utc}' = ISO format UTC
+            datetime, and '{datetime_unix}' = UNIX timestamp
+        :param file_absolute_location: (overrides relative location) absolute directory + filename; see
+            `file_relative_location` parameter description for filename placeholders
         :return: None
         """
         # check if video snapshot pipeline was constructed
         if self.video_snap_name not in self.pipelines_snap:
             logbook.error("Video snapshot pipeline wasn't constructed. Ignoring command.")
             return None
+        # get the recording duration from the appropriate source
+        if duration is None:
+            snap_duration = int(self.video_snap_config.get('default_duration', DEFAULT_VIDEO_SNAP_DURATION))
+        else:
+            snap_duration = duration
         # check duration limits
-        if duration > 3600:
+        if snap_duration > 3600:
             logbook.error("Video snapshot duration is too high. Limit = 1 hour (3600 seconds). Ignoring command.")
             return None
-        elif duration < 5:
+        elif snap_duration < 5:
             logbook.error("Video snapshot duration is too short. Minimum = 5 seconds. Ignoring command.")
             return None
         # decide directory from relative vs. absolute
@@ -1119,10 +1147,13 @@ class IngestSession:
             logbook.error("Problem making directory.")
             print_exc()
             return None
-        snap_abs_fn = os.path.join(snap_abs_dir, snap_fn)
+        # add in the optional placeholders/formatters
+        snap_abs_fn = os.path.join(snap_abs_dir, snap_fn).format(
+            datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
+            datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()), datetime_unix=time.time())
 
         vidsnap = multiprocessing.Process(target=self._video_snapshot_worker,
-                                          args=(duration, snap_abs_fn))
+                                          args=(snap_duration, snap_abs_fn))
         logbook.notice("Starting video snapshot worker process.")
         try:
             vidsnap.start()
@@ -1205,12 +1236,12 @@ def main():
         session.start_cameras()
         session.start_buffers()
         session.start_persistent_recording_all_cameras()
-        # time.sleep(300)
+        time.sleep(15)
         # session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
         while True:
             if session.image_snap_config.get('enable', 'false').lower() == 'true':
                 session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
-            time.sleep(900)
+            time.sleep(1200)
     except KeyboardInterrupt:
         print_exc()
         session.stop_persistent_recording_all_cameras()
