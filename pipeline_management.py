@@ -1261,13 +1261,15 @@ def main(argv):
     usage = """
     pipeline_management.py [-v] [-t] -c <config-file> -r <session-root-directory> -m <resource-monitor-interval>
     -v: print version and author information, then exit
+    -h/--help: print usage information, then exit
     -t: run startup tests, which include running an image and video snapshot
     -c/--config_file: relative or absolute file path for session config file
     -r/--root_directory: location in which to make the session directory where files are stored
     -m/--resource_monitor_interval: number of seconds between resource monitor logging (unspecified = monitor off)
     """
     try:
-        opts, args = getopt.getopt(argv, 'vtc:r:m:', ['config_file=', 'root_directory=', 'resource_monitor_interval='])
+        opts, args = getopt.getopt(argv, 'vhtc:r:m:',
+                                   ['help', 'config_file=', 'root_directory=', 'resource_monitor_interval='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
@@ -1282,6 +1284,9 @@ def main(argv):
             print("Author: {}".format(__author__))
             print("Version: {}".format(__version__))
             print("Status: {}".format(__status__))
+            sys.exit()
+        elif opt in ('-h', '--help'):
+            print("Usage:", usage)
             sys.exit()
         elif opt == '-t':
             startup_test = True
