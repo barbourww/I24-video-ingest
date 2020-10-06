@@ -975,7 +975,8 @@ class IngestSession:
                 # add in camera name to directory if needed
                 snap_abs_fmt_dir = snap_abs_dir.format(
                     cam_name=camera_name, datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
-                    datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()), datetime_unix=time.time())
+                    datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()),
+                    datetime_unix=str(time.time())[:-3])
                 # make the directory if it doesn't exist
                 if not os.path.exists(snap_abs_fmt_dir):
                     logbook.notice("Making directory: {}".format(snap_abs_fmt_dir))
@@ -983,7 +984,8 @@ class IngestSession:
                 # join the formatted absolute directory and the formatted (if applicable) filename
                 snap_abs_fmt_fn = os.path.join(snap_abs_fmt_dir, snap_fn.format(
                     cam_name=camera_name, datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
-                    datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()), datetime_unix=time.time()))
+                    datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()),
+                    datetime_unix=str(time.time())[:-3]))
                 # set the location of the filesink in the image snap pipeline
                 logbook.info("Setting location of {} pipeline filesink to {}.".format(self.image_snap_name,
                                                                                       snap_abs_fmt_fn))
@@ -1005,18 +1007,20 @@ class IngestSession:
                 snapimg_pipeline.play()
                 time.sleep(IMAGE_SNAP_EXECUTE_TIME)
                 # TODO: need EOS for encode or snap pipeline? Memory impact?
+                snapimg_pipeline.eos()
                 snapimg_pipeline.stop()
+                encode_img_pipeline.eos()
                 encode_img_pipeline.stop()
                 fns.append(snap_abs_fmt_fn)
             except (GstcError, GstdError):
-                logbook.error("Problem with encoding/snapshot pipeline.")
+                logbook.error("Problem with encoding/snapshot pipeline for camera {}.".format(camera_name))
                 print_exc()
                 continue
         logbook.notice("Image snapshot worker process complete.")
         logbook.notice("Snapshots: {}".format(fns))
         return fns
 
-    def take_image_snapshot(self, file_relative_location=None, file_absolute_location=None, cameras='all'):
+    def take_image_snapshot(self, file_relative_location=None, file_absolute_location=None, cameras='all', join=False):
         """
         Takes a still image snapshot of each camera specified. They are taken one at a time in order to avoid spinning
             up numerous H.264->still transcoding pipelines. Failure of one snapshot will not prevent the others.
@@ -1027,6 +1031,7 @@ class IngestSession:
         :param file_absolute_location: same as relative location, but setting this != None automatically overrides it;
             see `file_relative_location` for valid placeholder descriptions
         :param cameras: cameras to snapshot; 'all'=all cameras; list/tuple of camera names; ','-sep. str of camera names
+        :param join: T/F wait for snapshot to complete (i.e., call multiprocessing.Process.join())
         :return: None
         """
         # check if video snapshot pipeline was constructed
@@ -1076,7 +1081,11 @@ class IngestSession:
         logbook.notice("Starting image snapshot worker process.")
         try:
             imgsnap.start()
-            logbook.notice("Process started, exiting blocking function.")
+            if join is True:
+                logbook.notice("Process started, waiting for completion (join=True).")
+                imgsnap.join()
+            else:
+                logbook.notice("Process started, exiting blocking function.")
         except multiprocessing.ProcessError:
             logbook.error("Problem starting image snap worker process.")
             print_exc()
@@ -1108,7 +1117,7 @@ class IngestSession:
             print_exc()
             return None
 
-    def take_video_snapshot(self, duration=None, file_relative_location=None, file_absolute_location=None):
+    def take_video_snapshot(self, duration=None, file_relative_location=None, file_absolute_location=None, join=False):
         """
         Takes a snapshot of video from each camera, beginning with the buffered backlog of video. This allows the
             video snapshot trigger to grab video from a little while ago. Buffer length specified in config file.
@@ -1119,6 +1128,7 @@ class IngestSession:
             datetime, and '{datetime_unix}' = UNIX timestamp
         :param file_absolute_location: (overrides relative location) absolute directory + filename; see
             `file_relative_location` parameter description for filename placeholders
+        :param join: T/F wait for snapshot to complete (i.e., call multiprocessing.Process.join())
         :return: None
         """
         # check if video snapshot pipeline was constructed
@@ -1163,14 +1173,19 @@ class IngestSession:
         # add in the optional placeholders/formatters
         snap_abs_fn = os.path.join(snap_abs_dir, snap_fn).format(
             datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
-            datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()), datetime_unix=time.time())
+            datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()),
+            datetime_unix=str(time.time())[:-3])
 
         vidsnap = multiprocessing.Process(target=self._video_snapshot_worker,
                                           args=(snap_duration, snap_abs_fn))
         logbook.notice("Starting video snapshot worker process.")
         try:
             vidsnap.start()
-            logbook.notice("Process started, exiting blocking function.")
+            if join is True:
+                logbook.notice("Process started, waiting for completion (join=True).")
+                vidsnap.join()
+            else:
+                logbook.notice("Process started, exiting blocking function.")
         except multiprocessing.ProcessError:
             logbook.error("Problem starting video snap worker process.")
             print_exc()
@@ -1251,9 +1266,10 @@ def main(argv):
     -m/--resource_monitor_interval: number of seconds between resource monitor logging (unspecified = monitor off)
     """
     try:
-        opts, args = getopt.getopt(argv, 'vtc:r:', ['config_file=', 'root_directory='])
+        opts, args = getopt.getopt(argv, 'vtc:r:m:', ['config_file=', 'root_directory=', 'resource_monitor_interval='])
     except getopt.GetoptError:
         print("Usage:", usage)
+        print_exc()
         sys.exit(2)
     config_file = None
     root_directory = None
@@ -1297,12 +1313,14 @@ def main(argv):
             os.mkdir(os.path.join(session.session_absolute_directory, 'startup_test'))
             if session.video_snap_config.get('enable', 'false').lower() == 'true':
                 time.sleep(float(session.video_snap_config.get('buffer_time', DEFAULT_BUFFER_TIME)))
-                session.take_video_snapshot(file_relative_location='startup_test/vidsnap.mp4')
+                session.take_video_snapshot(file_relative_location='startup_test/vidsnap.mp4',
+                                            join=True)
                 print(">>Video snapshot complete.")
             else:
                 print(">>Video snapshot not enabled.")
             if session.image_snap_config.get('enable', 'false').lower() == 'true':
-                session.take_image_snapshot(cameras='all', file_relative_location='startup_test/imgsnap_{cam_name}.jpg')
+                session.take_image_snapshot(cameras='all', file_relative_location='startup_test/imgsnap_{cam_name}.jpg',
+                                            join=True)
                 print(">>Image snapshot complete.")
             else:
                 print(">>Image snapshot not enabled.")
