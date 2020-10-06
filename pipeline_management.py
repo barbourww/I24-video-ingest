@@ -1,3 +1,11 @@
+__author__ = "William Barbour, Ph.D.; Vanderbilt University"
+__credits__ = ["Daniel Work, Ph.D.; Vanderbilt University",
+               "Derek Gloudemans; Vanderbilt University",
+               "RidgeRun, LLC",]
+__version__ = "0.6"
+__maintainer__ = "William Barbour"
+__status__ = "Development"
+
 from parameters import *
 
 from pygstc.gstc import *
@@ -11,9 +19,10 @@ import datetime
 from traceback import print_exc
 import subprocess
 import multiprocessing
-import os
-import warnings
 from collections import OrderedDict
+import os
+import sys
+import getopt
 
 
 class PipelineEntity(object):
@@ -874,9 +883,13 @@ class IngestSession:
 
     def start_buffers(self):
         """
-        Start the video buffer pipelines so they start holding backlog.
+        Start the video buffer pipelines so they start holding backlog. Does nothing if buffer pipelines aren't
+            constructed during pipeline construction.
         :return: None
         """
+        if self.video_snap_config.get('enable', 'false').lower() == 'false':
+            logbook.notice("Buffer start called but no buffer pipelines constructed.")
+            return
         try:
             logbook.notice("Starting camera stream buffers for video snapshot.")
             for pipeline_name, pipeline in self.pipelines_video_buffer.items():
@@ -1224,24 +1237,88 @@ class IngestSession:
         self.manager.stop()
 
 
-def main():
-    # '/home/dev/Videos/ingest_pipeline'
-    # '/media/dev/Data_HDD1/Axis_video'
-    session = IngestSession(session_root_directory='/home/dev/Videos/ingest_pipeline',
-                            session_config_file='./sample.config')
+def main(argv):
+    """
+    Primary routine for video ingestion.
+    :param argv: command line arguments read using sys.argv[1:]
+    """
+    usage = """
+    pipeline_management.py [-v] [-t] -c <config-file> -r <session-root-directory> -m <resource-monitor-interval>
+    -v: print version and author information, then exit
+    -t: run startup tests, which include running an image and video snapshot
+    -c/--config_file: relative or absolute file path for session config file
+    -r/--root_directory: location in which to make the session directory where files are stored
+    -m/--resource_monitor_interval: number of seconds between resource monitor logging (unspecified = monitor off)
+    """
     try:
-        session.start_resource_monitor(log_interval=10)
-        # time.sleep(15)
+        opts, args = getopt.getopt(argv, 'vtc:r:', ['config_file=', 'root_directory='])
+    except getopt.GetoptError:
+        print("Usage:", usage)
+        sys.exit(2)
+    config_file = None
+    root_directory = None
+    startup_test = False
+    monitor_interval = None
+    for opt, arg in opts:
+        if opt == '-v':
+            print("Video ingestions pipeline management software.")
+            print("Author: {}".format(__author__))
+            print("Version: {}".format(__version__))
+            print("Status: {}".format(__status__))
+            sys.exit()
+        elif opt == '-t':
+            startup_test = True
+        elif opt in ('-c', '--config_file'):
+            config_file = arg
+        elif opt in ('-r', '--root_directory'):
+            root_directory = arg
+        elif opt in ('-m', '--resource_monitor_interval'):
+            monitor_interval = int(arg)
+    if config_file is None or root_directory is None:
+        print("Must supply both config file and session root directory.")
+        print("Usage:", usage)
+        sys.exit(2)
+
+    session = IngestSession(session_root_directory=root_directory, session_config_file=config_file)
+    try:
+        # start resource monitor if requested
+        if monitor_interval is not None:
+            session.start_resource_monitor(log_interval=monitor_interval)
+        time.sleep(5)
+
+        # construct and start pipelines
         session.construct_pipelines()
         session.start_cameras()
         session.start_buffers()
+
+        # run startup test of image and video snapshots if requested
+        if startup_test is True:
+            print("Running startup test...")
+            os.mkdir(os.path.join(session.session_absolute_directory, 'startup_test'))
+            if session.video_snap_config.get('enable', 'false').lower() == 'true':
+                time.sleep(float(session.video_snap_config.get('buffer_time', DEFAULT_BUFFER_TIME)))
+                session.take_video_snapshot(file_relative_location='startup_test/vidsnap.mp4')
+                print(">>Video snapshot complete.")
+            else:
+                print(">>Video snapshot not enabled.")
+            if session.image_snap_config.get('enable', 'false').lower() == 'true':
+                session.take_image_snapshot(cameras='all', file_relative_location='startup_test/imgsnap_{cam_name}.jpg')
+                print(">>Image snapshot complete.")
+            else:
+                print(">>Image snapshot not enabled.")
+            print("Startup tests complete.")
+
+        # start persistent recording
         session.start_persistent_recording_all_cameras()
         time.sleep(15)
-        # session.take_video_snapshot(duration=35, file_relative_location='/vidsnap/snap0.mp4')
+
+        # infinite loop, take image snapshots if enabled in config file
         while True:
             if session.image_snap_config.get('enable', 'false').lower() == 'true':
-                session.take_image_snapshot(cameras='all', file_relative_location='imgsnap/snap_{}.jpg')
+                # use default filename
+                session.take_image_snapshot(cameras='all')
             time.sleep(1200)
+
     except KeyboardInterrupt:
         print_exc()
         session.stop_persistent_recording_all_cameras()
@@ -1252,4 +1329,4 @@ def main():
         session.kill_gstd()
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])
