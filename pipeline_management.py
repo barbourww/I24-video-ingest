@@ -1007,6 +1007,7 @@ class IngestSession:
                 snapimg_pipeline.play()
                 time.sleep(IMAGE_SNAP_EXECUTE_TIME)
                 # TODO: need EOS for encode or snap pipeline? Memory impact?
+                # TODO: something is going on with bad encoding in images
                 snapimg_pipeline.eos()
                 snapimg_pipeline.stop()
                 encode_img_pipeline.eos()
