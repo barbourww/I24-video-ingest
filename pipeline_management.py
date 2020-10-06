@@ -339,7 +339,8 @@ class IngestSession:
         header_filename = os.path.join(self.session_absolute_directory, '_SESSION_INFO.txt')
         with open(header_filename, 'w') as f:
             f.write("SESSION #{}".format(self.this_session_number))
-            f.write("\nINFORMATIONAL/HEADER FILE\n")
+            f.write("\nINFORMATIONAL/HEADER FILE")
+            f.write("\n")
             f.write("-" * 50)
             # directory information
             f.write("\nDirectory (absolute): {}".format(self.session_absolute_directory))
@@ -350,16 +351,17 @@ class IngestSession:
             utctimenow = datetime.datetime.utcnow()
             unix_utctimenow = (utctimenow - datetime.datetime(year=1970, month=1, day=1)).total_seconds()
             f.write("\nSession initialization time (UTC): {} (UNIX: {})".format(utctimenow, unix_utctimenow))
+            f.write("\n")
             f.write("-" * 50)
             # camera information
             f.write("Number of cameras initialized: {}".format(len(self.camera_config)))
             for cc in self.camera_config:
-                f.write("{}: {}".format(cc['name'], cc['rtsp_address']))
+                f.write("\n{}: {}".format(cc['name'], cc['rtsp_address']))
         return header_filename
 
     def initialize_gstd(self):
         """
-
+        Start GStreamer Daemon process on the machine through its command line interface.
         :return: None
         """
         # TODO: pass in connection parameters
@@ -655,7 +657,7 @@ class IngestSession:
             raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
         # check if we need to create camera-specific directories, or just one directory
         if '{cam_name}' in file_dir:
-            create_dirs = [file_dir.format(cam_name) for cam_name in self.pipelines_cameras.keys()]
+            create_dirs = [file_dir.format(cam_name=cam_name) for cam_name in self.pipelines_cameras.keys()]
         elif '{cam_name}' in file_name:
             create_dirs = [file_dir]
         else:
@@ -690,9 +692,7 @@ class IngestSession:
             print("Maximum number of files set directly from config value: {}".format(max_num_files))
         # set filesink (splitmuxsink element) properties for location and file management
         for cam_name in self.pipelines_cameras.keys():
-            cam_dir = (file_dir if '{}' not in file_dir else file_dir.format(cam_name))
-            cam_file = (file_name if '{}' not in file_name else file_name.format(cam_name))
-            cam_full_location = os.path.join(cam_dir, cam_file)
+            cam_full_location = os.path.join(file_dir, file_name).format(cam_name=cam_name)
             print("Setting file path for camera {} to {}".format(cam_name, cam_full_location))
             record_h264.set_property(PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name),
                                      'location', cam_full_location)
@@ -1072,6 +1072,7 @@ class IngestSession:
                 snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
         else:
             snap_abs_dir, snap_fn = os.path.split(file_absolute_location)
+        logbook.info("Final video snap directory: {}".format(snap_abs_dir))
         # check if there are multiple cameras and make sure the placeholder is included
         if len(camlist) > 1 and ('{cam_name}' not in snap_fn and '{cam_name}' not in snap_abs_dir):
             logbook.error(">1 camera requested for image snap, but '{cam_name}' not in filename. Ignoring command.")
@@ -1150,18 +1151,20 @@ class IngestSession:
             return None
         # decide directory from relative vs. absolute
         if file_absolute_location is None:
-            snap_dir, snap_fn = os.path.split(file_relative_location)
+            if file_relative_location is None:
+                snap_dir, snap_fn = os.path.split(DEFAULT_VIDEO_SNAPSHOT_FILENAME)
+            else:
+                snap_dir, snap_fn = os.path.split(file_relative_location)
+            # check for './' at the start of the filename and compensate
             if snap_dir.startswith('./'):
-                snap_dir = snap_dir[2:]
-                logbook.info("Reformatting relative location to {}".format(snap_dir))
+                snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir[2:])
             elif snap_dir.startswith('/'):
-                snap_dir = snap_dir[1:]
-                logbook.info("Reformatting relative location to {}".format(snap_dir))
-            snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
-            logbook.info("Relative file location inside session directory: {}".format(snap_abs_dir))
+                snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir[1:])
+            else:
+                snap_abs_dir = os.path.join(self.session_absolute_directory, snap_dir)
         else:
             snap_abs_dir, snap_fn = os.path.split(file_absolute_location)
-            logbook.info("Absolute file location directory override for video snap: {}".format(snap_abs_dir))
+        logbook.info("Final video snap directory: {}".format(snap_abs_dir))
         # make the directory, if needed, then set the file location
         try:
             if not os.path.exists(snap_abs_dir):
@@ -1176,6 +1179,7 @@ class IngestSession:
             datetime_local=datetime.datetime.isoformat(datetime.datetime.now()),
             datetime_utc=datetime.datetime.isoformat(datetime.datetime.utcnow()),
             datetime_unix=str(time.time())[:-3])
+        logbook.notice("Final video snap location: {}".format(snap_abs_fn))
 
         vidsnap = multiprocessing.Process(target=self._video_snapshot_worker,
                                           args=(snap_duration, snap_abs_fn))
@@ -1315,7 +1319,7 @@ def main(argv):
 
         # run startup test of image and video snapshots if requested
         if startup_test is True:
-            print("Running startup test...")
+            print("Running startup tests...")
             os.mkdir(os.path.join(session.session_absolute_directory, 'startup_test'))
             if session.video_snap_config.get('enable', 'false').lower() == 'true':
                 time.sleep(float(session.video_snap_config.get('buffer_time', DEFAULT_BUFFER_TIME)))
