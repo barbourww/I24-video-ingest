@@ -23,6 +23,7 @@ from collections import OrderedDict
 import os
 import sys
 import getopt
+import signal
 
 
 class PipelineEntity(object):
@@ -157,7 +158,8 @@ class IngestSession:
         :param session_config_file: configuration file describing session elements and parameters
         :return: None
         """
-
+        # determine parent PID
+        self.pid = multiprocessing.current_process().pid
         # determine session number and root directory
         self.this_session_number = self._next_session_number(session_root_directory)
         session_relative_directory = DEFAULT_SESSION_DIRECTORY_FORMAT.format(self.this_session_number)
@@ -175,6 +177,7 @@ class IngestSession:
         self.logqueue = multiprocessing.Queue(-1)
         self.handler, self.sub = None, None     # initialize these to None; they'll be set in self._setup_logging()
         self._setup_logging()
+        logbook.notice("Session parent PID: {}".format(self.pid))
         logbook.notice("Next session number according to session root directory: {}".format(self.this_session_number))
         logbook.notice("Session directory created: {}".format(self.session_absolute_directory))
         logbook.notice("Session logging directory created: {}".format(self.session_log_directory))
@@ -237,7 +240,7 @@ class IngestSession:
                                              backup_count=5, rollover_format='{basename}-{timestamp}{ext}')
         ])
         self.sub = MultiProcessingSubscriber(self.logqueue)
-        self.sub.dispatch_in_background(target_handlers)
+        self.logctl = self.sub.dispatch_in_background(target_handlers)
         logbook.notice("Logger setup complete")
 
     def _next_session_number(self, session_root_directory):
@@ -351,6 +354,7 @@ class IngestSession:
             utctimenow = datetime.datetime.utcnow()
             unix_utctimenow = (utctimenow - datetime.datetime(year=1970, month=1, day=1)).total_seconds()
             f.write("\nSession initialization time (UTC): {} (UNIX: {})".format(utctimenow, unix_utctimenow))
+            f.write("\nParent process ID: {}".format(self.pid))
             f.write("\n")
             f.write("-" * 50)
             # camera information
@@ -426,7 +430,9 @@ class IngestSession:
         readers = []
         logbook.notice("Starting bus readers for pipelines: {}".format(pipes))
         for pipe, filter in zip(pipes, filters):
-            readers.append(multiprocessing.Process(target=self._bus_reader_worker, args=(pipe, filter)))
+            br = multiprocessing.Process(target=self._bus_reader_worker, args=(pipe, filter))
+            br.daemon = True
+            readers.append(br)
         for reader in readers:
             reader.start()
         self.detached_processes += readers
@@ -558,6 +564,7 @@ class IngestSession:
         monitor = multiprocessing.Process(target=self._resource_monitor_worker,
                                           args=(log_interval, get_cpu, get_memory, get_network,
                                                 get_disk, get_recording_dir))
+        monitor.daemon = True
         logbook.notice("Starting resource monitor process.")
         monitor.start()
         self.detached_processes.append(monitor)
@@ -869,6 +876,7 @@ class IngestSession:
             if len(self.camera_counters_to_start) > 0:
                 for cam_name, interval in self.camera_counters_to_start:
                     fc = multiprocessing.Process(target=self._appsink_frame_counter, args=(cam_name, interval))
+                    fc.daemon = True
                     fc.start()
                     self.detached_processes.append(fc)
                 self.camera_counters_to_start = []
@@ -1080,6 +1088,7 @@ class IngestSession:
 
         imgsnap = multiprocessing.Process(target=self._image_snapshot_worker,
                                           args=(camlist, snap_abs_dir, snap_fn))
+        imgsnap.daemon = True
         logbook.notice("Starting image snapshot worker process.")
         try:
             imgsnap.start()
@@ -1183,6 +1192,7 @@ class IngestSession:
 
         vidsnap = multiprocessing.Process(target=self._video_snapshot_worker,
                                           args=(snap_duration, snap_abs_fn))
+        vidsnap.daemon = True
         logbook.notice("Starting video snapshot worker process.")
         try:
             vidsnap.start()
@@ -1243,8 +1253,10 @@ class IngestSession:
     def stop_all_processes(self):
         """
         Stops all persistent/detached processes from session. These should have been added to self.detached_processes.
+            Also stops the logbook queue via its controller at self.logctl.
         :return: None
         """
+        self.logctl.stop()
         for proc in self.detached_processes:
             proc.terminate()
 
@@ -1256,6 +1268,10 @@ class IngestSession:
         logbook.notice("Stopping Gstreamer Daemon.")
         self.manager.stop()
 
+
+def sigterm_handler(signum, frame):
+    logbook.notice("Received SIGTERM or SIGINT. Exiting with code 0 and shutting down processes.")
+    sys.exit(0)
 
 def main(argv):
     """
@@ -1305,6 +1321,11 @@ def main(argv):
         print("Usage:", usage)
         sys.exit(2)
 
+    # connect sigterm_handler to SIGTERM and SIGINT signals
+    signal.signal(signal.SIGTERM, sigterm_handler)
+    # signal.signal(signal.SIGKILL, sigterm_handler)
+    signal.signal(signal.SIGINT, sigterm_handler)
+
     session = IngestSession(session_root_directory=root_directory, session_config_file=config_file)
     try:
         # start resource monitor if requested
@@ -1349,12 +1370,14 @@ def main(argv):
 
     except KeyboardInterrupt:
         print_exc()
-        session.stop_persistent_recording_all_cameras()
     finally:
+        logbook.notice("Shutdown initiated.")
+        session.stop_persistent_recording_all_cameras()
         session.stop_all_processes()
         session.stop_all_pipelines()
         session.deconstruct_all_pipelines()
         session.kill_gstd()
+        logbook.notice("Shutdown complete.")
 
 if __name__ == '__main__':
     main(sys.argv[1:])
