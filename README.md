@@ -1,12 +1,12 @@
-#I24-video-ingest
-######Video ingestions pipeline management software.
-######Author: William Barbour, Ph.D.; Vanderbilt University
-######Version: 0.6
-######Status: Development
+# I24-video-ingest
+###### Video ingestions pipeline management software.
+###### Author: William Barbour, Ph.D.; Vanderbilt University
+###### Version: 0.6
+###### Status: Development
 
 - - -
 
-##1) Introduction
+## 1) Introduction
 
 This video ingestion pipeline leverages GStreamer and GStreamer Daemon (developed by RidgeRun) to control video
 streaming tasks on demand. The current core functionality is 1) the ability to start/stop persistent multi-file 
@@ -22,7 +22,7 @@ Specification of the configuration file, as well as the other command line usage
 file and the destination root directory for storing the video ingestion session files are the only required options.
 
 
-##2) Installation
+## 2) Installation
 
 This repository contains only pure Python code, which does not itself require installation or setup. However, it does
 have additional Python dependencies, which are included in 'requirements.txt'. They can be installed using
@@ -38,11 +38,11 @@ its install [using this method](https://developer.ridgerun.com/wiki/index.php?ti
 In the future, a list of shell commands may be provided for installation of all dependencies.
 
 
-##3) Usage
+## 3) Usage
 
-#####Command line usage:
+##### Command line usage:
 `pipeline_management.py -c <config-file> -r <session-root-directory> [-t] [-m <resource-monitor-interval>] [-v] [-h]`
-######Options:
+###### Options:
 - `-c/--config_file`: (required for run) relative or absolute file path for session config file
 - `-r/--root_directory`: (required for run) location in which to make the session directory where files are stored
 - `-t`: run startup tests, which include running an image and video snapshot
@@ -50,16 +50,16 @@ In the future, a list of shell commands may be provided for installation of all 
 - `-v`: print version and author information, then exit
 - `-h/--help`: print usage information, then exit
 
-#####To allow detachment from command line:
+##### To allow detachment from command line:
 `nohup python3 pipeline_management.py [OPTIONS] &`
 
-#####To find PID after detaching:
+##### To find PID after detaching:
 `ps ax | grep pipeline_management.py`
 
-#####To kill after finding PID:
+##### To kill after finding PID:
 `kill PID`
 
-##4) Configuration files
+## 4) Configuration files
 
 General configuration file information is as follows. Additional parameter-specific information is below and can be 
 found in the sample markdown file (./config/sample.config).
@@ -131,7 +131,7 @@ maximum_segment_files==0
 # maximum_camera_storage==1000
 ```
 
-##5) Future development
+## 5) Future development
 
 There are still some lingering issues related ot logging and progress reporting that would be helpful to complete.
 A better way of handling interrupts from detached processes is needed. Future releases will also focus on making the 
