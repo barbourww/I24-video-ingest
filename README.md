@@ -41,7 +41,7 @@ In the future, a list of shell commands may be provided for installation of all 
 ## 3) Usage
 
 ##### Command line usage:
-`pipeline_management.py -c <config-file> -r <session-root-directory> [-t] [-m <resource-monitor-interval>] [-v] [-h]`
+`python3 pipeline_management.py -c <config-file> -r <session-root-directory> [-t] [-m <resource-monitor-interval>] [-v] [-h]`
 ###### Options:
 - `-c/--config_file`: (required for run) relative or absolute file path for session config file
 - `-r/--root_directory`: (required for run) location in which to make the session directory where files are stored
@@ -50,14 +50,34 @@ In the future, a list of shell commands may be provided for installation of all 
 - `-v`: print version and author information, then exit
 - `-h/--help`: print usage information, then exit
 
+At this time, a shebang (`#!/usr/bin/env python3`) is not included in pipeline_management.py, so the python3 command is needed.
+
 ##### To allow detachment from command line:
 `nohup python3 pipeline_management.py [OPTIONS] &`
 
-##### To find PID after detaching:
-`ps ax | grep pipeline_management.py`
+Note that the ampersand (&) is required at the end to detach the process. This command will automatically send STDOUT
+and STDERR to file at ./nohup.out. To specify a log file for this output, use the following command, where output.log is
+your chosen destination for the log file.
 
-##### To kill after finding PID:
-`kill PID`
+`nohup python3 pipeline_management.py [OPTIONS] > output.log &`
+
+Alternatively, to suppress logging this output, divert STDOUT and STDERR ("2>&1") to /dev/null.
+
+`nohup python3 pipeline_management.py [OPTIONS] > /dev/null 2>&1 &`
+
+The parent process ID (PID) will be displayed after this command (hit ENTER to continue with terminal). The parent PID
+can also be found in the session header file (session_directory/_SESSION_INFO.txt).
+
+#####To find PID after detaching (also in session header file):
+`ps ax -H | grep pipeline_management.py`
+
+This will show processes hierarchically so that the parent process can be more easily identified.
+
+#####To kill after finding PID:
+`kill -2 PID`
+
+Signal number 2 sends SIGINT (which is essentially a KeyboardInterrupt). SIGINT (-2) and SIGTERM (-15) are caught by 
+main(). If a process is hanging and will not exit with -2 or -15, use SIGKILL (-9) to force.
 
 ## 4) Configuration files
 
