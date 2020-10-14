@@ -95,7 +95,7 @@ def parse_config_params(root_directory):
     return rec_dirs, file_name, cam_names
 
 
-def write_frame_count_results(results_dict, filename):
+def write_frame_count_results(results_dict, filename, print_results=False):
     """
 
     :param results_dict:
@@ -105,8 +105,14 @@ def write_frame_count_results(results_dict, filename):
     with open(filename, 'w') as f:
         writer = csv.writer(f, delimiter=';', quoting=csv.QUOTE_NONNUMERIC)
         writer.writerow(["filename", "frame-count"])
+        if print_results is True:
+            print("\n______FRAME COUNT RESULTS______")
+            print("filename    ----    frame count")
+            print("-------------------------------")
         for cn, fc in sorted(list(results_dict.items()), key=lambda x: x[0]):
             writer.writerow([cn, fc])
+            if print_results is True:
+                print(cn, '-->', fc)
     return
 
 
@@ -115,21 +121,25 @@ def main(argv):
     query_frames.py [-h] -s <session-directory>
     -h/--help: print usage information, then exit
     -s/--session_directory: path of the session directory where files are stored
+    -p/--print_output: flag to print output of frame counting as it is being written to file
     """
     try:
-        opts, args = getopt.getopt(argv, 'hs:',
-                                   ['help', 'session_directory='])
+        opts, args = getopt.getopt(argv, 'hps:',
+                                   ['help', 'print_output', 'session_directory='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
         sys.exit(2)
     session_directory = None
+    print_output = False
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             print("Usage:", usage)
             sys.exit()
         elif opt in ('-s', '--session_directory'):
             session_directory = arg
+        elif opt in ('-p', '--print_output'):
+            print_output = True
     if session_directory is None:
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
@@ -141,7 +151,8 @@ def main(argv):
                                 camera_names=camera_names)
     file_frame_counts = get_video_stats(video_file_names=matching_files)
     write_frame_count_results(results_dict=file_frame_counts,
-                              filename=os.path.join(session_directory, 'recording_frame_counts.csv'))
+                              filename=os.path.join(session_directory, 'recording_frame_counts.csv'),
+                              print_results=print_output)
 
 
 if __name__ == '__main__':
