@@ -1,7 +1,7 @@
 # I24-video-ingest
 ###### Video ingestions pipeline management software.
 ###### Author: William Barbour, Ph.D.; Vanderbilt University
-###### Version: 1.01 (dev)
+###### Version: 1.02 (dev)
 ###### Status: Development
 
 - - -
@@ -151,7 +151,23 @@ maximum_segment_files==0
 # maximum_camera_storage==1000
 ```
 
-## 5) Future development
+## 5) Frame counter utility
+
+This utility is designed to provide frame counts (future statistics/analytics later) for video files in a session
+recording directory. It finds files matching the format of the persistent recording file name found in the session
+configuration file ('_SESSION_CONFIG.config') and runs an FFprobe command on each to get the number of frames in the
+video container:
+
+`ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nokey=1:noprint_wrappers=1 file.mp4`
+
+##### Command line usage:
+`python3 query_frames.py [-h] [-p] -s <session-directory>`
+###### Options:
+- `-s/--session_directory`: (required for run) path of the session directory where files are stored
+- `-p/--print_output`: flag to print output of frame counting as it is being written to file
+- `-h/--help`: print usage information, then exit
+
+## 6) Future development
 
 There are still some lingering issues related ot logging and progress reporting that would be helpful to complete.
 A better way of handling interrupts from detached processes is needed. Future releases will also focus on making the 

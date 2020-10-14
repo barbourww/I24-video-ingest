@@ -118,7 +118,7 @@ def write_frame_count_results(results_dict, filename, print_results=False):
 
 def main(argv):
     usage = """
-    query_frames.py [-h] -s <session-directory>
+    query_frames.py [-h] [-p] -s <session-directory>
     -h/--help: print usage information, then exit
     -s/--session_directory: path of the session directory where files are stored
     -p/--print_output: flag to print output of frame counting as it is being written to file
