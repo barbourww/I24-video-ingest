@@ -1,14 +1,36 @@
 import os
 import sys
 import getopt
+import subprocess
 from traceback import print_exc
+import re
+import csv
 
 import utilities
 from parameters import *
 
 
-def get_video_stats(video_file_name):
-    pass
+def get_video_stats(video_file_names):
+    """
+
+    :param video_file_names:
+    :return:
+    """
+    if not isinstance(video_file_names, (list, tuple)):
+        raise TypeError("Must provide list of tuple of video filenames.")
+    frame_counts = {}
+    for vfn in video_file_names:
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames",
+               "-of", "default=nokey=1:noprint_wrappers=1", vfn]
+        fcp = subprocess.run(args=cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        try:
+            frame_counts[vfn] = int(fcp.stdout)
+        except ValueError:
+            print("INVALID OUTPUT FROM FFPROBE COMMAND")
+            print("STDOUT:", fcp.stdout)
+            print("STDERR:", fcp.stderr)
+            print_exc()
+    return frame_counts
 
 
 def find_files(recording_directories, file_name_format, camera_names):
@@ -19,12 +41,20 @@ def find_files(recording_directories, file_name_format, camera_names):
     :param camera_names:
     :return: list of file names for recrodingds matching file name format
     """
+    file_name_regex = re.sub('%(0[0-9]{1})*d', '([0-9]+)', file_name_format)
+    cam_file_name_regexs = [file_name_regex.replace('{cam_name}', cn) for cn in camera_names]
+    print("Searching for file names matching any of:", cam_file_name_regexs)
     all_files = []
     for rdir in recording_directories:
         for rfile in os.listdir(rdir):
             all_files.append(os.path.join(rdir, rfile))
-    # TODO: need to do regex match between file names and format
-    pass
+    print("Found {} files in recording directories.".format(len(all_files)))
+    match_files = []
+    for fl in all_files:
+        if any([re.search(crx, fl) is not None for crx in cam_file_name_regexs]):
+            match_files.append(fl)
+    print("Found {} files matching recording file name format.".format(len(match_files)))
+    return match_files
 
 
 def parse_config_params(root_directory):
@@ -65,11 +95,25 @@ def parse_config_params(root_directory):
     return rec_dirs, file_name, cam_names
 
 
+def write_frame_count_results(results_dict, filename):
+    """
+
+    :param results_dict:
+    :param filename:
+    :return: None
+    """
+    with open(filename, 'w') as f:
+        writer = csv.writer(f, delimiter=';', quoting=csv.QUOTE_NONNUMERIC)
+        writer.writerow(["filename", "frame-count"])
+        for cn, fc in sorted(list(results_dict.items()), key=lambda x: x[0]):
+            writer.writerow([cn, fc])
+    return
+
+
 def main(argv):
     usage = """
-    pipeline_management.py [-h] -c <config-file> -r <session-root-directory>
+    query_frames.py [-h] -s <session-directory>
     -h/--help: print usage information, then exit
-    -c/--config_file: relative or absolute file path for session config file
     -s/--session_directory: path of the session directory where files are stored
     """
     try:
@@ -90,6 +134,14 @@ def main(argv):
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
         sys.exit(2)
+    #
+    recording_directories, recording_filename_format, camera_names = parse_config_params(
+        root_directory=session_directory)
+    matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,
+                                camera_names=camera_names)
+    file_frame_counts = get_video_stats(video_file_names=matching_files)
+    write_frame_count_results(results_dict=file_frame_counts,
+                              filename=os.path.join(session_directory, 'recording_frame_counts.csv'))
 
 
 if __name__ == '__main__':
