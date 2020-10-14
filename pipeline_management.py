@@ -120,7 +120,8 @@ class GstdManager:
     def start(self, restart=True):
         self.stop()
         print("Starting GStreamer Daemon...")
-        gstd_proc = subprocess.run(self.gstd_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+        gstd_proc = subprocess.run(self.gstd_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   universal_newlines=True)
         if gstd_proc.returncode == 0:
             print("Success.")
         elif gstd_proc.returncode == 1:
