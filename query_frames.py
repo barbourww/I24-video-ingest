@@ -19,7 +19,9 @@ def get_video_stats(video_file_names):
     if not isinstance(video_file_names, (list, tuple)):
         raise TypeError("Must provide list of tuple of video filenames.")
     frame_counts = {}
-    for vfn in video_file_names:
+    for i, vfn in enumerate(video_file_names):
+        if i % 100 == 0:
+            print("Query number {}".format(i))
         cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames",
                "-of", "default=nokey=1:noprint_wrappers=1", vfn]
         fcp = subprocess.run(args=cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
@@ -50,9 +52,15 @@ def find_files(recording_directories, file_name_format, camera_names):
             all_files.append(os.path.join(rdir, rfile))
     print("Found {} files in recording directories.".format(len(all_files)))
     match_files = []
-    for fl in all_files:
-        if any([re.search(crx, fl) is not None for crx in cam_file_name_regexs]):
-            match_files.append(fl)
+    for crx in cam_file_name_regexs:
+        cam_files = []
+        for fl in all_files:
+            if re.search(crx, fl) is not None:
+                cam_files.append(fl)
+        match_files += sorted(cam_files)[:-1]
+    #for fl in all_files:
+    #    if any([re.search(crx, fl) is not None for crx in cam_file_name_regexs]):
+    #        match_files.append(fl)
     print("Found {} files matching recording file name format.".format(len(match_files)))
     return match_files
 
