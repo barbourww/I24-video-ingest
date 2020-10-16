@@ -19,6 +19,7 @@ def get_video_stats(video_file_names):
     if not isinstance(video_file_names, (list, tuple)):
         raise TypeError("Must provide list of tuple of video filenames.")
     frame_counts = {}
+    print("\nRunning video frame count queries.")
     for i, vfn in enumerate(video_file_names):
         if i % 100 == 0:
             print("Query number {}".format(i))
@@ -35,13 +36,14 @@ def get_video_stats(video_file_names):
     return frame_counts
 
 
-def find_files(recording_directories, file_name_format, camera_names):
+def find_files(recording_directories, file_name_format, camera_names, drop_last_file=False):
     """
 
     :param recording_directories:
     :param file_name_format:
     :param camera_names:
-    :return: list of file names for recrodingds matching file name format
+    :param drop_last_file:
+    :return: list of file names for recordings matching file name format
     """
     file_name_regex = re.sub('%(0[0-9]{1})*d', '([0-9]+)', file_name_format)
     cam_file_name_regexs = [file_name_regex.replace('{cam_name}', cn) for cn in camera_names]
@@ -57,7 +59,10 @@ def find_files(recording_directories, file_name_format, camera_names):
         for fl in all_files:
             if re.search(crx, fl) is not None:
                 cam_files.append(fl)
-        match_files += sorted(cam_files)[:-1]
+        if drop_last_file is True:
+            match_files += sorted(cam_files)[:-1]
+        else:
+            match_files += sorted(cam_files)
     #for fl in all_files:
     #    if any([re.search(crx, fl) is not None for crx in cam_file_name_regexs]):
     #        match_files.append(fl)
@@ -130,16 +135,18 @@ def main(argv):
     -h/--help: print usage information, then exit
     -s/--session_directory: path of the session directory where files are stored
     -p/--print_output: flag to print output of frame counting as it is being written to file
+    -d/--drop_last_file: flag to not query the last file in recording sequence, in case recording is actively occurring
     """
     try:
-        opts, args = getopt.getopt(argv, 'hps:',
-                                   ['help', 'print_output', 'session_directory='])
+        opts, args = getopt.getopt(argv, 'hpds:',
+                                   ['help', 'print_output', 'drop_last_file', 'session_directory='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
         sys.exit(2)
     session_directory = None
     print_output = False
+    drop_last_file = False
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             print("Usage:", usage)
@@ -148,6 +155,8 @@ def main(argv):
             session_directory = arg
         elif opt in ('-p', '--print_output'):
             print_output = True
+        elif opt in ('-d', '--drop_last_file'):
+            drop_last_file = True
     if session_directory is None:
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
@@ -156,7 +165,7 @@ def main(argv):
     recording_directories, recording_filename_format, camera_names = parse_config_params(
         root_directory=session_directory)
     matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,
-                                camera_names=camera_names)
+                                camera_names=camera_names, drop_last_file=drop_last_file)
     file_frame_counts = get_video_stats(video_file_names=matching_files)
     write_frame_count_results(results_dict=file_frame_counts,
                               filename=os.path.join(session_directory, 'recording_frame_counts.csv'),

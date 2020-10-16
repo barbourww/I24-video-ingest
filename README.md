@@ -160,12 +160,16 @@ video container:
 
 `ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nokey=1:noprint_wrappers=1 file.mp4`
 
+If video recording is in progress, it is recommended to use the `-d` option for the frame query call, so that the last
+file in the recording sequence (being actively written to) is not included (for consistency and file access conflict).
+
 ##### Command line usage:
 `python3 query_frames.py [-h] [-p] -s <session-directory>`
 ###### Options:
 - `-s/--session_directory`: (required for run) path of the session directory where files are stored
 - `-p/--print_output`: flag to print output of frame counting as it is being written to file
 - `-h/--help`: print usage information, then exit
+- `-d/--drop_last_file`: flag to not query the last file in recording sequence, in case recording is actively occurring
 
 ## 6) Future development
 
