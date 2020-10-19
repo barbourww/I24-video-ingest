@@ -136,10 +136,11 @@ def main(argv):
     -s/--session_directory: path of the session directory where files are stored
     -p/--print_output: flag to print output of frame counting as it is being written to file
     -d/--drop_last_file: flag to not query the last file in recording sequence, in case recording is actively occurring
+    -o/--output_filename: override output filename for results
     """
     try:
-        opts, args = getopt.getopt(argv, 'hpds:',
-                                   ['help', 'print_output', 'drop_last_file', 'session_directory='])
+        opts, args = getopt.getopt(argv, 'hpds:o:',
+                                   ['help', 'print_output', 'drop_last_file', 'session_directory=', 'output_filename='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
@@ -147,6 +148,7 @@ def main(argv):
     session_directory = None
     print_output = False
     drop_last_file = False
+    output_filename = None
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             print("Usage:", usage)
@@ -157,19 +159,21 @@ def main(argv):
             print_output = True
         elif opt in ('-d', '--drop_last_file'):
             drop_last_file = True
+        elif opt in ('-o', '--output_filename'):
+            output_filename = arg
     if session_directory is None:
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
         sys.exit(2)
-    #
+    if output_filename is None:
+        output_filename = os.path.join(session_directory, 'recording_frame_counts.csv')
     recording_directories, recording_filename_format, camera_names = parse_config_params(
         root_directory=session_directory)
     matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,
                                 camera_names=camera_names, drop_last_file=drop_last_file)
     file_frame_counts = get_video_stats(video_file_names=matching_files)
     write_frame_count_results(results_dict=file_frame_counts,
-                              filename=os.path.join(session_directory, 'recording_frame_counts.csv'),
-                              print_results=print_output)
+                              filename=output_filename, print_results=print_output)
 
 
 if __name__ == '__main__':
