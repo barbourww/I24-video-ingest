@@ -12,15 +12,15 @@ from parameters import *
 
 def get_video_stats(video_file_names):
     """
-
-    :param video_file_names:
-    :return:
+    Run FFprobe frame count queries for recorded video segments.
+    :param video_file_names: list of video file names to query for frame counts
+    :return: dictionary of frame counts {video-file-name: frame-count, ...}
     """
     if not isinstance(video_file_names, (list, tuple)):
         raise TypeError("Must provide list of tuple of video filenames.")
     frame_counts = {}
     print("\nRunning video frame count queries.")
-    for i, vfn in enumerate(video_file_names):
+    for i, (vfn, vfi) in enumerate(video_file_names):
         if i % 100 == 0:
             print("Query number {}".format(i))
         cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames",
@@ -36,13 +36,14 @@ def get_video_stats(video_file_names):
     return frame_counts
 
 
-def find_files(recording_directories, file_name_format, camera_names, drop_last_file=False):
+def find_files(recording_directories, file_name_format, camera_names, drop_last_file=False, first_file_index=0):
     """
-
-    :param recording_directories:
-    :param file_name_format:
-    :param camera_names:
-    :param drop_last_file:
+    Determine files in recording directories that match file recording naming format.
+    :param recording_directories: list of directories in which to search for files (one or many, based on file naming)
+    :param file_name_format: file name format with which the persistent recording was working
+    :param camera_names: list of camera names to substitute into file name format
+    :param drop_last_file: flag to ignore/drop the last file in the recording sequence, per camera
+    :param first_file_index: minimum recording segment number to keep files (used for checking recent files only)
     :return: list of file names for recordings matching file name format
     """
     file_name_regex = re.sub('%(0[0-9]{1})*d', '([0-9]+)', file_name_format)
@@ -57,23 +58,25 @@ def find_files(recording_directories, file_name_format, camera_names, drop_last_
     for crx in cam_file_name_regexs:
         cam_files = []
         for fl in all_files:
-            if re.search(crx, fl) is not None:
-                cam_files.append(fl)
+            rem = re.search(crx, fl)
+            if rem is not None:
+                # extract the first group match, which contains the segment index
+                remi = int(rem.group(1))
+                if remi >= first_file_index:
+                    cam_files.append((fl, remi))
+        # sort files by segment index and drop the last one, if requested, while adding to all matches
         if drop_last_file is True:
-            match_files += sorted(cam_files)[:-1]
+            match_files += sorted(cam_files, key=lambda x: x[1])[:-1]
         else:
-            match_files += sorted(cam_files)
-    #for fl in all_files:
-    #    if any([re.search(crx, fl) is not None for crx in cam_file_name_regexs]):
-    #        match_files.append(fl)
+            match_files += sorted(cam_files, key=lambda x: x[1])
     print("Found {} files matching recording file name format.".format(len(match_files)))
     return match_files
 
 
 def parse_config_params(root_directory):
     """
-
-    :param root_directory:
+    Determine relevant parameters from video ingest session configuration.
+    :param root_directory: directory of video ingest session, which contains automatic copy of config file.
     :return: recording directory, file_name_format
     """
     # determine the config file path and parse that file
@@ -110,9 +113,10 @@ def parse_config_params(root_directory):
 
 def write_frame_count_results(results_dict, filename, print_results=False):
     """
-
-    :param results_dict:
-    :param filename:
+    Write the dictionary of frame count results to a CSV file.
+    :param results_dict: dictionary of frame count results {file-name: frame-count, ...}
+    :param filename: filename to which results should be written
+    :param print_results: T/F print results as they're written to file
     :return: None
     """
     with open(filename, 'w') as f:
@@ -140,7 +144,8 @@ def main(argv):
     """
     try:
         opts, args = getopt.getopt(argv, 'hpds:o:',
-                                   ['help', 'print_output', 'drop_last_file', 'session_directory=', 'output_filename='])
+                                   ['help', 'print_output', 'drop_last_file', 'session_directory=', 'output_filename=',
+                                    'first_file='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
@@ -149,6 +154,7 @@ def main(argv):
     print_output = False
     drop_last_file = False
     output_filename = None
+    first_file = 0
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             print("Usage:", usage)
@@ -161,6 +167,8 @@ def main(argv):
             drop_last_file = True
         elif opt in ('-o', '--output_filename'):
             output_filename = arg
+        elif opt == '--first_file':
+            first_file = int(arg)
     if session_directory is None:
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
@@ -170,7 +178,7 @@ def main(argv):
     recording_directories, recording_filename_format, camera_names = parse_config_params(
         root_directory=session_directory)
     matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,
-                                camera_names=camera_names, drop_last_file=drop_last_file)
+                                camera_names=camera_names, drop_last_file=drop_last_file, first_file_index=first_file)
     file_frame_counts = get_video_stats(video_file_names=matching_files)
     write_frame_count_results(results_dict=file_frame_counts,
                               filename=output_filename, print_results=print_output)
