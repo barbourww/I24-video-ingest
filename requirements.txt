@@ -6,3 +6,5 @@
 logbook >= 1.5.3
 # for system resource usage
 psutil
+# for plotting log and frame data
+matplotlib >= 3.0

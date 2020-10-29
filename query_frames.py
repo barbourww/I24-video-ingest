@@ -133,55 +133,110 @@ def write_frame_count_results(results_dict, filename, print_results=False):
     return
 
 
+def plot_frame_count_results(results_dict, filename, session_info_filename):
+    import matplotlib.pyplot as plt
+    import datetime as dt
+    cams = {}
+    for rfile, count in results_dict.items():
+        cm = rfile.split('_')[-2]
+        rn = int(rfile.split('_')[-1].split('.')[0])
+        if cm in cams:
+            cams[cm].append((rn, count))
+        else:
+            cams[cm] = [(rn, count)]
+    tref = utilities.get_session_start_time(session_info_filename)
+    fig, axs = plt.subplots(3, 1, figsize=(12, 9))
+    for cam, counts in cams.items():
+        # TODO: this pole determination needs to be more robust in the future
+        pole = int(cam.split('c')[0].split('p')[1])
+        sct = sorted(counts)[:-1]
+        rns, cts = zip(*sct)
+        rns = [tref + dt.timedelta(minutes=rn * 10) for rn in rns]
+        axs[pole - 1].plot(rns, cts, label=cam)
+    w1, w2 = 0, 0
+    for ax in axs:
+        l1, l2 = ax.get_ylim()
+        if l2 - l1 > w2 - w1:
+            w1, w2 = l1, l2
+    for ax in axs:
+        ax.set_ylim((w1, w2))
+        ax.legend()
+    axs[0].set_title("Recording file frame counts")
+    plt.tight_layout()
+    plt.savefig(filename)
+
+
 def main(argv):
     usage = """
     query_frames.py [-h] [-p] -s <session-directory>
     -h/--help: print usage information, then exit
-    -s/--session_directory: path of the session directory where files are stored
-    -p/--print_output: flag to print output of frame counting as it is being written to file
     -d/--drop_last_file: flag to not query the last file in recording sequence, in case recording is actively occurring
-    -o/--output_filename: override output filename for results
+    -s/--session_directory /path/to/session_directory : (required) path of the session directory where files are stored
+    -o/--output_filename /path/to/output_file.csv : override output filename for results
+    --print_output: flag to print output of frame counting as it is being written to file
+    --plot_output: flag to plot output of frame counting, grouped by pole (same filename as output, but .pdf)
+    --first_file ### : file segment index at which to start querying
     """
     try:
-        opts, args = getopt.getopt(argv, 'hpds:o:',
-                                   ['help', 'print_output', 'drop_last_file', 'session_directory=', 'output_filename=',
-                                    'first_file='])
+        opts, args = getopt.getopt(argv, 'hds:o:',
+                                   ['help', 'print_output', 'plot_output', 'drop_last_file',
+                                    'session_directory=', 'output_filename=', 'first_file='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
         sys.exit(2)
+
+    # defaults for inputs
     session_directory = None
-    print_output = False
     drop_last_file = False
-    output_filename = None
+    results_filename = None
     first_file = 0
+    print_output = False
+    plot_output = False
+    # parse inputs
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             print("Usage:", usage)
             sys.exit()
         elif opt in ('-s', '--session_directory'):
             session_directory = arg
-        elif opt in ('-p', '--print_output'):
-            print_output = True
         elif opt in ('-d', '--drop_last_file'):
             drop_last_file = True
         elif opt in ('-o', '--output_filename'):
-            output_filename = arg
-        elif opt == '--first_file':
+            results_filename = arg
+        elif opt in ('--first_file',):
             first_file = int(arg)
+        elif opt in ('--print_output',):
+            print_output = True
+        elif opt in ('--plot_output',):
+            plot_output = True
+
+    # this is the only required input
     if session_directory is None:
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
         sys.exit(2)
-    if output_filename is None:
-        output_filename = os.path.join(session_directory, 'recording_frame_counts.csv')
+    # default to files in session directory if not specified
+    if results_filename is None:
+        results_filename = os.path.join(session_directory, 'frame_counts_recording.csv')
+        plot_filename = os.path.join(session_directory, 'frame_counts_recording.pdf')
+    else:
+        plot_filename = os.path.splitext(results_filename)[0] + '.pdf'
+
+    # go get the relevant configuration parameters
     recording_directories, recording_filename_format, camera_names = parse_config_params(
         root_directory=session_directory)
+    # determine the files in the recording directory matching the filename format
     matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,
                                 camera_names=camera_names, drop_last_file=drop_last_file, first_file_index=first_file)
+    # run the frame count queries
     file_frame_counts = get_video_stats(video_file_names=matching_files)
+    # write the frame count results to a CSV file and, optionally, a plot by pole
     write_frame_count_results(results_dict=file_frame_counts,
-                              filename=output_filename, print_results=print_output)
+                              filename=results_filename, print_results=print_output)
+    if plot_output is True:
+        plot_frame_count_results(results_dict=file_frame_counts, filename=plot_filename,
+                                 session_info_filename=os.path.join(session_directory, '_SESSION_INFO.txt'))
 
 
 if __name__ == '__main__':

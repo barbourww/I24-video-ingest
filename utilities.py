@@ -57,3 +57,17 @@ def parse_config_file(config_file):
 
     # send back configs
     return camera_config, image_snap_config, video_snap_config, recording_config
+
+
+def get_session_start_time(session_info_filename):
+    import datetime
+    with open(session_info_filename, 'r') as f:
+        for line in f:
+            # TODO: change this to a regex
+            if line.startswith("Session initialization time (local): "):
+                ts = line.strip("Session initialization time (local): ").split("(UNIX:")[0]
+                ts = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+                break
+        else:
+            raise ValueError("Couldn't find line with timestamp.")
+    return ts
