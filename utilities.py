@@ -1,3 +1,6 @@
+import os
+import re
+
 
 def parse_config_file(config_file):
     """
@@ -70,3 +73,18 @@ def get_session_start_time(session_info_filename):
         else:
             raise ValueError("Couldn't find line with timestamp.")
     return ts
+
+
+def get_manager_log_files(session_directory, log_directory=None):
+    """
+    Determines list of log files written by video ingest manager.
+    :param session_directory: top level directory of video ingest session
+    :param log_directory: location of log files from video ingest manager (overrides session_directory)
+    :return: list of files matching ingest manager logs ("manager-TIMESTAMP.log)
+    """
+    look_in_directory = (os.path.join(session_directory, 'logs') if log_directory is None else log_directory)
+    manager_logs = []
+    for fn in os.listdir(look_in_directory):
+        if re.search('manager-(.*)\.log', fn) is not None:
+            manager_logs.append(fn)
+    return manager_logs
