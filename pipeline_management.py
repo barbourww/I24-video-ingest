@@ -313,7 +313,7 @@ class IngestSession:
             f.write("\n")
             f.write("-" * 50)
             # camera information
-            f.write("Number of cameras initialized: {}".format(len(self.camera_config)))
+            f.write("\nNumber of cameras initialized: {}".format(len(self.camera_config)))
             for cc in self.camera_config:
                 f.write("\n{}: {}".format(cc['name'], cc['rtsp_address']))
         return header_filename

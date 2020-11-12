@@ -2,6 +2,7 @@ import os
 import sys
 import getopt
 import subprocess
+import warnings
 from traceback import print_exc
 import re
 import csv
@@ -133,7 +134,30 @@ def write_frame_count_results(results_dict, filename, print_results=False):
     return
 
 
+def read_frame_count_results(file_path):
+    """
+    Reads a file containing frame counts written from `write_frame_count_results()`.
+    :param file_path: Path to file containing results.
+    :return: dictionary of results in same format it was written
+    """
+    with open(file_path, 'r') as f:
+        reader = csv.reader(f, delimiter=';', quoting=csv.QUOTE_NONNUMERIC)
+        header = next(reader)
+        results_dict = {}
+        for row in reader:
+            if row is not None and len(row) == 2:
+                results_dict[row[0]] = row[1]
+        return results_dict
+
+
 def plot_frame_count_results(results_dict, filename, session_info_filename):
+    """
+    Generates a plot from frame count results.
+    :param results_dict: dictionary of results {video_file_path: frame_count, ...}
+    :param filename: file path for plot (PDF)
+    :param session_info_filename: path to _SESSION_INFO.txt file in order to extract session start time for reference
+    :return:
+    """
     import matplotlib.pyplot as plt
     import datetime as dt
     cams = {}
@@ -149,8 +173,10 @@ def plot_frame_count_results(results_dict, filename, session_info_filename):
     for cam, counts in cams.items():
         # TODO: this pole determination needs to be more robust in the future
         pole = int(cam.split('c')[0].split('p')[1])
-        sct = sorted(counts)[:-1]
+        # sort based on segment number
+        sct = sorted(counts)
         rns, cts = zip(*sct)
+        # TODO: video segment time needs to be written to _SESSION_INFO.txt and extracted in the future
         rns = [tref + dt.timedelta(minutes=rn * 10) for rn in rns]
         axs[pole - 1].plot(rns, cts, label=cam)
     w1, w2 = 0, 0
@@ -168,19 +194,32 @@ def plot_frame_count_results(results_dict, filename, session_info_filename):
 
 def main(argv):
     usage = """
-    query_frames.py [-h] [-p] -s <session-directory>
+    query_frames.py [-h] [-l] -s <session-directory>
+    
+    # alternate behaviors that execute and exit
     -h/--help: print usage information, then exit
+    -l/--load_plot_output: load results file in session directory (need -s), plot the results, then exit; if non-default
+        results output filename, then specify it with -o/--output_filename= option
+    
+    # required arguments
+    -s/--session_directory= /path/to/session_directory : (required) path of the session directory where files are stored
+    
+    # options with value required (options themselves are not required)
+    -o/--output_filename= /path/to/output_file.csv : override output filename for results
+    -i/--first_file= ### : file segment index at which to start querying
+    -a/--append_outputs= /path/to/alt_output1.csv,path/to/alt_output2.csv : comma-delineated list of *absolute* results 
+        file paths to append to -o/--output_filename= specified results (used during post-facto plotting option -l/--.)
+    
+    # options with no value to specify
     -d/--drop_last_file: flag to not query the last file in recording sequence, in case recording is actively occurring
-    -s/--session_directory /path/to/session_directory : (required) path of the session directory where files are stored
-    -o/--output_filename /path/to/output_file.csv : override output filename for results
+    -p/--plot_output: flag to plot output of frame counting, grouped by pole (same filename as output, but .pdf)
     --print_output: flag to print output of frame counting as it is being written to file
-    --plot_output: flag to plot output of frame counting, grouped by pole (same filename as output, but .pdf)
-    --first_file ### : file segment index at which to start querying
+    
     """
     try:
-        opts, args = getopt.getopt(argv, 'hds:o:',
-                                   ['help', 'print_output', 'plot_output', 'drop_last_file',
-                                    'session_directory=', 'output_filename=', 'first_file='])
+        opts, args = getopt.getopt(argv, 'hldps:o:i:a:',
+                                   ['help', 'load_plot_output', 'drop_last_file', 'plot_output', 'print_output',
+                                    'session_directory=', 'output_filename=', 'first_file=', 'append_outputs='])
     except getopt.GetoptError:
         print("Usage:", usage)
         print_exc()
@@ -190,38 +229,69 @@ def main(argv):
     session_directory = None
     drop_last_file = False
     results_filename = None
+    append_results = None
     first_file = 0
     print_output = False
     plot_output = False
+    # flag to plot output and exit (needs to capture session_directory value)
+    plot_and_exit = False
     # parse inputs
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             print("Usage:", usage)
             sys.exit()
+        elif opt in ('-l', '--load_plot_output'):
+            plot_and_exit = True
         elif opt in ('-s', '--session_directory'):
             session_directory = arg
         elif opt in ('-d', '--drop_last_file'):
             drop_last_file = True
         elif opt in ('-o', '--output_filename'):
             results_filename = arg
-        elif opt in ('--first_file',):
+        elif opt in ('-a', '--append_outputs'):
+            if ',' not in arg:
+                warnings.warn("Only got on results file to append. If that's not right, check comma delineation.")
+            append_results_unfiltered = arg.split(',')
+            append_results = []
+            for fn in append_results_unfiltered:
+                if os.path.exists(fn):
+                    append_results.append(fn)
+                else:
+                    warnings.warn("Path to results file in append argument does not exit: {}".format(fn))
+            if len(append_results) == 0:
+                append_results = None
+        elif opt in ('-i', '--first_file',):
             first_file = int(arg)
         elif opt in ('--print_output',):
             print_output = True
-        elif opt in ('--plot_output',):
+        elif opt in ('-p', '--plot_output',):
             plot_output = True
+        else:
+            warnings.warn("Got unhandled option/argument. OPTION=[{}] ARGUMENT=[{}]".format(opt, arg))
 
     # this is the only required input
     if session_directory is None:
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
         sys.exit(2)
+    session_info_file_path = os.path.join(session_directory, '_SESSION_INFO.txt')
+
     # default to files in session directory if not specified
     if results_filename is None:
         results_filename = os.path.join(session_directory, 'frame_counts_recording.csv')
         plot_filename = os.path.join(session_directory, 'frame_counts_recording.pdf')
     else:
         plot_filename = os.path.splitext(results_filename)[0] + '.pdf'
+
+    # if plot and exit requested, then do so
+    if plot_and_exit:
+        file_frame_counts = read_frame_count_results(file_path=results_filename)
+        if append_results is not None:
+            for arfn in append_results:
+                file_frame_counts.update(read_frame_count_results(file_path=arfn))
+        plot_frame_count_results(results_dict=file_frame_counts, filename=plot_filename,
+                                 session_info_filename=session_info_file_path)
+        sys.exit()
 
     # go get the relevant configuration parameters
     recording_directories, recording_filename_format, camera_names = parse_config_params(
@@ -236,7 +306,7 @@ def main(argv):
                               filename=results_filename, print_results=print_output)
     if plot_output is True:
         plot_frame_count_results(results_dict=file_frame_counts, filename=plot_filename,
-                                 session_info_filename=os.path.join(session_directory, '_SESSION_INFO.txt'))
+                                 session_info_filename=session_info_file_path)
 
 
 if __name__ == '__main__':
