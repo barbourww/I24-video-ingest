@@ -107,10 +107,10 @@ def get_video_frame_timestamps(video_file_names):
             continue
         timestamps[vfn] = cam_ts
         cap.release()
-        print(i / (time.time() - t0), "fps processing rate")
+        print("{:.1f} fps processing rate".format(i / (time.time() - t0)))
     # if we had any errors in checksum recognition, append them to the running file
     if len(pixel_errors) > 0:
-        if 'pixel_errors.pkl' in os.listdir('./resources'):
+        if 'errors_pixel_checksum.pkl' in os.listdir('./resources'):
             with open('./resources/pixel_errors.pkl', 'rb') as f:
                 pixel_errors = pickle.load(f) + pixel_errors
         with open('./resources/pixel_errors.pkl', 'wb') as f:
@@ -155,7 +155,8 @@ def find_files(recording_directories, file_name_format, camera_names, drop_last_
             match_files += sorted(cam_files, key=lambda x: x[1])
     print("Found {} files matching recording file name format.".format(len(match_files)))
     if filter_filenames is not None:
-        match_files = [fn for fn in match_files if any([fn_filt in fn for fn_filt in filter_filenames])]
+        match_files = [fn for fn in match_files if any([fn_filt in fn[0] for fn_filt in filter_filenames])]
+        print("Filtered files to {} matching.".format(len(match_files)))
     return match_files
 
 
