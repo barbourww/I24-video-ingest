@@ -2,9 +2,14 @@
 # currently these don't work with PIP -- need to be set up at the OS level during gstd install
 #pygobject
 #pygstc == 0.2.0
+
 # for distributed logging
 logbook >= 1.5.3
 # for system resource usage
 psutil
 # for plotting log and frame data
 matplotlib >= 3.0
+
+# currently used only for timestamp extraction from frames
+numpy >= 1.0
+opencv-python >= 4.0
