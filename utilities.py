@@ -1,5 +1,68 @@
 import os
 import re
+import pickle
+import cv2
+import ast
+from numpy import array
+
+with open('./resources/timestamp_geometry_4K.pkl', 'rb') as f:
+    g = pickle.load(f)
+    w = g['w']
+    h = g['h']
+    x0 = g['x0']
+    y0 = g['y0']
+    n = g['n']
+    h13 = g['h13']
+    h23 = g['h23']
+    h12 = g['h12']
+    w12 = g['w12']
+with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as f:
+    dig_cs6 = pickle.load(f)
+
+
+def parse_frame_timestamp(frame_pixels):
+    """
+    Use pixel checksum method to parse timestamp from video frame. First extracts timestamp area from frame
+        array. Then converts to gray-scale, then converts to binary (black/white) mask. Each digit
+        (monospaced) is then compared against the pre-computed pixel checksum values for an exact match.
+    :param frame_pixels: numpy array of full (4K) color video frame
+    :return: timestamp (None if checksum error), pixels from error digit (if no exact checksum match)
+    """
+    # extract the timestamp in the x/y directions; keep the margin in both directions for now
+    tsimg = frame_pixels[0:(y0+h), 0:(x0+(n*w)), :]
+    # convert color to gray-scale
+    tsgray = cv2.cvtColor(tsimg, cv2.COLOR_BGR2GRAY)
+    # convert to black/white binary mask using fixed threshold (1/2 intensity)
+    # observed gray values on the edges of some digits in some frames were well below this threshold
+    ret, tsmask = cv2.threshold(tsgray, 127, 255, cv2.THRESH_BINARY)
+
+    # parse each of the `n` digits
+    ts_dig = []
+    for j in range(n):
+        # disregard the decimal point in the UNIX time (always reported in .00 precision)
+        if j == 10:
+            ts_dig.append('.')
+            continue
+
+        # extract the digit for this index, correcting for the margin that was left over
+        pixels = tsmask[y0:y0 + h, x0 + j * w:x0 + (j + 1) * w]
+        # compute the 6-area checksum and convert it to an array
+        cs = [[int(pixels[:h13, :w12].sum() / 255), int(pixels[:h13, w12:].sum() / 255)],
+              [int(pixels[h13:h23, :w12].sum() / 255), int(pixels[h13:h23, w12:].sum() / 255)],
+              [int(pixels[h23:, :w12].sum() / 255), int(pixels[h23:, w12:].sum() / 255)]
+              ]
+        cs = array(cs)
+        # compute the absolute difference between this digit and each candidate
+        cs_diff = [(dig, abs(cs - cs_ref).sum()) for dig, cs_ref in dig_cs6.items()]
+        pred_dig, pred_err = min(cs_diff, key=lambda x: x[1])
+        # looking for a perfect checksum match; testing showed this was reliable
+        if pred_err > 0:
+            # if no exact match, return no timestamp and the pixel values that resulted in the error
+            return None, pixels
+        else:
+            ts_dig.append(pred_dig)
+    # convert the list of strings into a number and return successful timestamp
+    return ast.literal_eval(''.join(map(str, ts_dig))), None
 
 
 def parse_config_file(config_file):

@@ -7,7 +7,7 @@ from traceback import print_exc
 import re
 import csv
 import time
-import ast
+import pickle
 
 import utilities
 from parameters import *
@@ -47,22 +47,7 @@ def get_video_frame_timestamps(video_file_names):
     """
     if not isinstance(video_file_names, (list, tuple)):
         raise TypeError("Must provide list of tuples (video-file-name, segment-number).")
-    import pickle
-    with open('./resources/timestamp_geometry_4K.pkl', 'rb') as f:
-        g = pickle.load(f)
-        w = g['w']
-        h = g['h']
-        x0 = g['x0']
-        y0 = g['y0']
-        n = g['n']
-        h13 = g['h13']
-        h23 = g['h23']
-        h12 = g['h12']
-        w12 = g['w12']
-    with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as f:
-        dig_cs6 = pickle.load(f)
     import cv2
-    import numpy as np
     timestamps = {}
     pixel_errors = []
     for i, (vfn, vfi) in enumerate(video_file_names):
@@ -80,29 +65,12 @@ def get_video_frame_timestamps(video_file_names):
             if frame is None:
                 print("End of video after {} frames.".format(i))
                 break
-            tsimg = frame[0:y0 + h, 0:x0 + (n * w), :]
-            tsgray = cv2.cvtColor(tsimg, cv2.COLOR_BGR2GRAY)
-            ret, tsmask = cv2.threshold(tsgray, 127, 255, cv2.THRESH_BINARY)
-
-            ts_dig = []
-            for j in range(n):
-                if j == 10:
-                    ts_dig.append('.')
-                    continue
-                pixels = tsmask[y0:y0 + h, x0 + j * w:x0 + (j + 1) * w]
-                cs = [[int(pixels[:h13, :w12].sum() / 255), int(pixels[:h13, w12:].sum() / 255)],
-                      [int(pixels[h13:h23, :w12].sum() / 255), int(pixels[h13:h23, w12:].sum() / 255)],
-                      [int(pixels[h23:, :w12].sum() / 255), int(pixels[h23:, w12:].sum() / 255)]
-                      ]
-                cs = np.array(cs)
-                cs_diff = [(dig, abs(cs - cs_ref).sum()) for dig, cs_ref in dig_cs6.items()]
-                pred_dig, pred_err = min(cs_diff, key=lambda x: x[1])
-                if pred_err > 0:
-                    ts_dig.append(0)
-                    pixel_errors.append(cs)
-                else:
-                    ts_dig.append(pred_dig)
-            cam_ts.append(ast.literal_eval(''.join(map(str, ts_dig))))
+            frame_ts, px_err = utilities.parse_frame_timestamp(frame_pixels=frame)
+            if frame_ts is not None:
+                cam_ts.append(frame_ts)
+            else:
+                cam_ts.append(0)
+                pixel_errors.append(px_err)
             i += 1
             continue
         timestamps[vfn] = cam_ts
