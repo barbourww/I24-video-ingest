@@ -239,7 +239,7 @@ def plot_frame_count_results(results_dict, filename, session_info_filename):
             cams[cm].append((rn, count))
         else:
             cams[cm] = [(rn, count)]
-    tref = utilities.get_session_start_time(session_info_filename)
+    tref = utilities.get_session_start_time_local(session_info_filename)
     fig, axs = plt.subplots(3, 1, figsize=(12, 9))
     for cam, counts in cams.items():
         # TODO: this pole determination needs to be more robust in the future
@@ -247,8 +247,8 @@ def plot_frame_count_results(results_dict, filename, session_info_filename):
         # sort based on segment number
         sct = sorted(counts)
         rns, cts = zip(*sct)
-        # TODO: video segment time needs to be written to _SESSION_INFO.txt and extracted in the future
-        rns = [tref + dt.timedelta(minutes=rn * 10) for rn in rns]
+        segment_time = utilities.get_sesssion_recording_segment_time(session_info_filename)
+        rns = [tref + dt.timedelta(minutes=rn * segment_time) for rn in rns]
         axs[pole - 1].plot(rns, cts, label=cam)
     w1, w2 = 0, 0
     for ax in axs:
@@ -260,6 +260,7 @@ def plot_frame_count_results(results_dict, filename, session_info_filename):
         ax.legend()
     axs[0].set_title("Recording file frame counts")
     plt.tight_layout()
+    print(filename)
     plt.savefig(filename)
 
 
@@ -363,7 +364,7 @@ def main(argv):
         print("Must supply session directory so we can pull config file and recordings.")
         print("Usage:", usage)
         sys.exit(2)
-    session_info_file_path = os.path.join(session_directory, '_SESSION_INFO.txt')
+    session_info_file_path = os.path.join(session_directory, DEFAULT_SESSION_INFO_FILENAME)
 
     # one of these modes must be selected
     if plot_and_exit is False:
@@ -372,27 +373,39 @@ def main(argv):
             print("Usage:", usage)
             sys.exit(2)
 
+    default_count_filename = 'frame_counts_recording.csv'
+    default_plot_filename = 'frame_counts_recording.pdf'
+    default_timestamp_filename = 'frame_timestamp_recording.csv'
+
     # default to files in session directory if not specified
     if results_filename is None:
-        count_filename = os.path.join(session_directory, 'frame_counts_recording.csv')
-        timestamp_filename = os.path.join(session_directory, 'frame_timestamp_recording.csv')
+        count_filename = os.path.join(session_directory, default_count_filename)
+        plot_filename = os.path.join(session_directory, default_plot_filename)
+        timestamp_filename = os.path.join(session_directory, default_timestamp_filename)
+    # results filename was specified (custom), so determine how this goes to count, plot, and timestamp filenames
     else:
         if count_frames is True and parse_timestamps is True:
+            # both count and timestamp indicated, so differentiate the value for results_filename, then .pdf for plot
             rfp, rfe = os.path.splitext(results_filename)
             count_filename = rfp + '-count' + rfe
+            plot_filename = os.path.splitext(count_filename)[0] + '.pdf'
             timestamp_filename = rfp + '-timestamp' + rfe
         elif count_frames is True:
+            # count indicated, so define that filename and the plot one
             count_filename = results_filename
+            plot_filename = os.path.splitext(count_filename)[0] + '.pdf'
             timestamp_filename = None
-        else:
-            # in this case, parse_timestamps = True; we already checked and eliminated the both false case
+        elif parse_timestamps is True:
+            # timestamp indicated, so define that filename only
             count_filename = None
+            plot_filename = None
             timestamp_filename = results_filename
-    # define plot filename if frame counting was indicated
-    if count_filename is not None:
-        plot_filename = os.path.splitext(count_filename)[0] + '.pdf'
-    else:
-        plot_filename = None
+        else:
+            # for else case, plot_and_exit must = True
+            # so change the extension from the results filename to PDF for the plot
+            count_filename = None
+            timestamp_filename = None
+            plot_filename = os.path.splitext(results_filename)[0] + '.pdf'
 
     # if plot and exit requested, then do so
     if plot_and_exit is True:

@@ -2,7 +2,7 @@ __author__ = "William Barbour, Ph.D.; Vanderbilt University"
 __credits__ = ["Daniel Work, Ph.D.; Vanderbilt University",
                "Derek Gloudemans; Vanderbilt University",
                "RidgeRun, LLC",]
-__version__ = "1.01 (dev)"
+__version__ = "1.02 (dev)"
 __maintainer__ = "William Barbour"
 __status__ = "Development"
 
@@ -316,6 +316,12 @@ class IngestSession:
             f.write("\nNumber of cameras initialized: {}".format(len(self.camera_config)))
             for cc in self.camera_config:
                 f.write("\n{}: {}".format(cc['name'], cc['rtsp_address']))
+            f.write("-" * 50)
+            f.write("\nRecording segment duration: {}".format(
+                float(self.recording_config.get('segment_time', DEFAULT_RECORDING_SEGMENT_DURATION))))
+            f.write("\nRecording file name format: {}".format(
+                self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)))
+            f.write("-" * 50)
         return header_filename
 
     def initialize_gstd(self):

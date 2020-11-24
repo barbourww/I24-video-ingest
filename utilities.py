@@ -5,8 +5,6 @@ import cv2
 import ast
 from numpy import array
 
-from parameters import DEFAULT_SESSION_INFO_FILENAME
-
 with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
     g = pickle.load(pf)
     w = g['w']
@@ -127,17 +125,13 @@ def parse_config_file(config_file):
     return camera_config, image_snap_config, video_snap_config, recording_config
 
 
-def get_session_start_time_local(session_info_filename_override=None):
+def get_session_start_time_local(session_info_filename):
     """
     Finds the local time at which the session was started, according to the _SESSION_INFO.txt file.
-    :param session_info_filename:
-    :return:
+    :param session_info_filename: path to session info filename
+    :return: datetime.datetime object representing local time at which session was initialized
     """
     import datetime
-    if session_info_filename_override is None:
-        session_info_filename = DEFAULT_SESSION_INFO_FILENAME
-    else:
-        session_info_filename = session_info_filename_override
     with open(session_info_filename, 'r') as f:
         for line in f:
             if line.startswith("Session initialization time (local): "):
@@ -147,6 +141,22 @@ def get_session_start_time_local(session_info_filename_override=None):
         else:
             raise ValueError("Couldn't find line with timestamp.")
     return ts
+
+
+def get_sesssion_recording_segment_time(session_info_filename):
+    """
+    Finds the duration of video segments for perpetual recording during this session.
+    :param session_info_filename:  path to session info filename
+    :return: number of minutes for video segments
+    """
+    with open(session_info_filename, 'r') as f:
+        for line in f:
+            if line.startswith("Recording segment duration: "):
+                rst = float(line.strip("Recording segment duration: "))
+                break
+        else:
+            raise ValueError("Couldn't find line with timestamp.")
+    return rst
 
 
 def get_manager_log_files(session_directory, log_directory=None):
