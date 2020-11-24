@@ -3,6 +3,10 @@
 # ------------------------------------------------
 DEFAULT_SESSION_DIRECTORY_FORMAT = "ingest_session_{:05d}"
 
+# session info filename, written at initialization
+# ------------------------------------------------
+DEFAULT_SESSION_INFO_FILENAME = "_SESSION_INFO.txt"
+
 # formatter names for pipeline interpipesrc and interpipesink elements
 # names are formatted with pipeline name
 # --------------------------------------------------------------------

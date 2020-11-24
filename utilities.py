@@ -5,8 +5,10 @@ import cv2
 import ast
 from numpy import array
 
-with open('./resources/timestamp_geometry_4K.pkl', 'rb') as f:
-    g = pickle.load(f)
+from parameters import DEFAULT_SESSION_INFO_FILENAME
+
+with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
+    g = pickle.load(pf)
     w = g['w']
     h = g['h']
     x0 = g['x0']
@@ -16,8 +18,8 @@ with open('./resources/timestamp_geometry_4K.pkl', 'rb') as f:
     h23 = g['h23']
     h12 = g['h12']
     w12 = g['w12']
-with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as f:
-    dig_cs6 = pickle.load(f)
+with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
+    dig_cs6 = pickle.load(pf)
 
 
 def parse_frame_timestamp(frame_pixels):
@@ -125,8 +127,17 @@ def parse_config_file(config_file):
     return camera_config, image_snap_config, video_snap_config, recording_config
 
 
-def get_session_start_time(session_info_filename):
+def get_session_start_time_local(session_info_filename_override=None):
+    """
+    Finds the local time at which the session was started, according to the _SESSION_INFO.txt file.
+    :param session_info_filename:
+    :return:
+    """
     import datetime
+    if session_info_filename_override is None:
+        session_info_filename = DEFAULT_SESSION_INFO_FILENAME
+    else:
+        session_info_filename = session_info_filename_override
     with open(session_info_filename, 'r') as f:
         for line in f:
             if line.startswith("Session initialization time (local): "):

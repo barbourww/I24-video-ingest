@@ -294,7 +294,7 @@ class IngestSession:
         Writes high-level information to header file in session directory.
         :return: header filename
         """
-        header_filename = os.path.join(self.session_absolute_directory, '_SESSION_INFO.txt')
+        header_filename = os.path.join(self.session_absolute_directory, DEFAULT_SESSION_INFO_FILENAME)
         with open(header_filename, 'w') as f:
             f.write("SESSION #{}".format(self.this_session_number))
             f.write("\nINFORMATIONAL/HEADER FILE")
