@@ -86,87 +86,6 @@ def get_video_frame_timestamps(video_file_names):
     return timestamps
 
 
-def find_files(recording_directories, file_name_format, camera_names, drop_last_file=False, first_file_index=0,
-               filter_filenames=None):
-    """
-    Determine files in recording directories that match file recording naming format.
-    :param recording_directories: list of directories in which to search for files (one or many, based on file naming)
-    :param file_name_format: file name format with which the persistent recording was working
-    :param camera_names: list of camera names to substitute into file name format
-    :param drop_last_file: flag to ignore/drop the last file in the recording sequence, per camera
-    :param first_file_index: minimum recording segment number to keep files (used for checking recent files only)
-    :param filter_filenames: list of filters to narrow down filenames (tested by `if filter in filename:`)
-    :return: list of file names for recordings matching file name format
-    """
-    file_name_regex = re.sub('%(0[0-9]{1})*d', '([0-9]+)', file_name_format)
-    cam_file_name_regexs = [file_name_regex.replace('{cam_name}', cn) for cn in camera_names]
-    print("Searching for file names matching any of:", cam_file_name_regexs)
-    all_files = []
-    for rdir in recording_directories:
-        for rfile in os.listdir(rdir):
-            all_files.append(os.path.join(rdir, rfile))
-    print("Found {} files in recording directories.".format(len(all_files)))
-    match_files = []
-    for crx in cam_file_name_regexs:
-        cam_files = []
-        for fl in all_files:
-            rem = re.search(crx, fl)
-            if rem is not None:
-                # extract the first group match, which contains the segment index
-                remi = int(rem.group(1))
-                if remi >= first_file_index:
-                    cam_files.append((fl, remi))
-        # sort files by segment index and drop the last one, if requested, while adding to all matches
-        if drop_last_file is True:
-            match_files += sorted(cam_files, key=lambda x: x[1])[:-1]
-        else:
-            match_files += sorted(cam_files, key=lambda x: x[1])
-    print("Found {} files matching recording file name format.".format(len(match_files)))
-    if filter_filenames is not None:
-        match_files = [fn for fn in match_files if any([fn_filt in fn[0] for fn_filt in filter_filenames])]
-        print("Filtered files to {} matching.".format(len(match_files)))
-    return match_files
-
-
-def get_recording_params(session_root_directory, camera_configs, recording_config):
-    """
-    Determine relevant parameters from video ingest session configuration.
-    :param session_root_directory: directory of video ingest session, which contains automatic copy of config file
-    :param camera_configs: list of camera configuration dictionaries (used to get camera names)
-    :param recording_config: persistent recording configuration dictionary (used to get recording file name format)
-    :return: list of recording directories (1+ depending on filename format), file_name_format, list of camera names
-    """
-
-    # get camera names for filename formatting
-    cam_names = []
-    for single_camera_config in camera_configs:
-        cam_names.append(single_camera_config['name'])
-    # get the recording filename, or the default
-    file_location = recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
-    # split path location into directory and filename
-    file_dir, file_name = os.path.split(file_location)
-    # check if it's a relative file path, and if so change it to absolute using session_root_directory
-    if file_dir.startswith('./'):
-        file_dir = os.path.join(session_root_directory, file_dir[2:])
-    else:
-        print("Absolute directory implied for persistent recording location.")
-    # check that the file number formatter is present (probably redundant because this passed the ingest pipeline setup)
-    if '%d' not in file_name and not any(['%0{}d'.format(i) in file_name for i in range(10)]):
-        print("Problem with recording configuration.")
-        raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
-    # check if we need to look in camera-specific directories, or just one directory
-    if '{cam_name}' in file_dir:
-        rec_dirs = [file_dir.format(cam_name=cam_name) for cam_name in cam_names]
-    elif '{cam_name}' in file_name:
-        rec_dirs = [file_dir]
-    else:
-        # didn't find a camera name placeholder in either the file_dir or the file_name
-        print("Problem with recording configuration.")
-        raise AttributeError("Need to camera name placeholder ('{cam_name}') in recording filename template.")
-    
-    return rec_dirs, file_name, cam_names
-
-
 def write_frame_count_results(results_dict, filename, print_results=False):
     """
     Write the dictionary of frame count results to a CSV file.
@@ -366,6 +285,7 @@ def main(argv):
         print("Usage:", usage)
         sys.exit(2)
     session_info_file_path = os.path.join(session_directory, DEFAULT_SESSION_INFO_FILENAME)
+    session_number = utilities.get_session_number(session_info_filename=session_info_file_path)
 
     # one of these modes must be selected
     if plot_and_exit is False:
@@ -422,12 +342,14 @@ def main(argv):
     config_file_path = os.path.join(session_directory, "_SESSION_CONFIG.config")
     camera_config, _, _, recording_config = utilities.parse_config_file(config_file=config_file_path)
     # go get the relevant configuration parameters
-    recording_directories, recording_filename_format, camera_names = get_recording_params(
-        root_directory=session_directory)
+    recording_directories, recording_filename_format, camera_names = utilities.get_recording_params(
+        session_root_directory=session_directory, session_number=session_number,
+        camera_configs=camera_config, recording_config=recording_config)
     # determine the files in the recording directory matching the filename format
-    matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,
-                                camera_names=camera_names, drop_last_file=drop_last_file, first_file_index=first_file,
-                                filter_filenames=input_filename_filters)
+    matching_files = utilities.find_files(recording_directories=recording_directories,
+                                          file_name_format=recording_filename_format, camera_names=camera_names,
+                                          drop_last_file=drop_last_file, first_file_index=first_file,
+                                          filter_filenames=input_filename_filters)
 
     if count_frames is True:
         # run the frame count queries
