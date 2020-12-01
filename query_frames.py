@@ -128,32 +128,33 @@ def find_files(recording_directories, file_name_format, camera_names, drop_last_
     return match_files
 
 
-def parse_config_params(root_directory):
+def get_recording_params(session_root_directory, camera_configs, recording_config):
     """
     Determine relevant parameters from video ingest session configuration.
-    :param root_directory: directory of video ingest session, which contains automatic copy of config file.
-    :return: recording directory, file_name_format
+    :param session_root_directory: directory of video ingest session, which contains automatic copy of config file
+    :param camera_configs: list of camera configuration dictionaries (used to get camera names)
+    :param recording_config: persistent recording configuration dictionary (used to get recording file name format)
+    :return: list of recording directories (1+ depending on filename format), file_name_format, list of camera names
     """
-    # determine the config file path and parse that file
-    config_file_path = os.path.join(root_directory, "_SESSION_CONFIG.config")
-    camera_config, _, _, recording_config = utilities.parse_config_file(config_file=config_file_path)
+
     # get camera names for filename formatting
     cam_names = []
-    for single_camera_config in camera_config:
+    for single_camera_config in camera_configs:
         cam_names.append(single_camera_config['name'])
     # get the recording filename, or the default
     file_location = recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
     # split path location into directory and filename
     file_dir, file_name = os.path.split(file_location)
+    # check if it's a relative file path, and if so change it to absolute using session_root_directory
     if file_dir.startswith('./'):
-        file_dir = os.path.join(root_directory, file_dir[2:])
+        file_dir = os.path.join(session_root_directory, file_dir[2:])
     else:
         print("Absolute directory implied for persistent recording location.")
-    # check that the file number formatter is present
+    # check that the file number formatter is present (probably redundant because this passed the ingest pipeline setup)
     if '%d' not in file_name and not any(['%0{}d'.format(i) in file_name for i in range(10)]):
         print("Problem with recording configuration.")
         raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
-    # check if we need to create camera-specific directories, or just one directory
+    # check if we need to look in camera-specific directories, or just one directory
     if '{cam_name}' in file_dir:
         rec_dirs = [file_dir.format(cam_name=cam_name) for cam_name in cam_names]
     elif '{cam_name}' in file_name:
@@ -162,7 +163,7 @@ def parse_config_params(root_directory):
         # didn't find a camera name placeholder in either the file_dir or the file_name
         print("Problem with recording configuration.")
         raise AttributeError("Need to camera name placeholder ('{cam_name}') in recording filename template.")
-
+    
     return rec_dirs, file_name, cam_names
 
 
@@ -417,8 +418,11 @@ def main(argv):
                                  session_info_filename=session_info_file_path)
         sys.exit()
 
+    # determine the config file path and parse that file
+    config_file_path = os.path.join(session_directory, "_SESSION_CONFIG.config")
+    camera_config, _, _, recording_config = utilities.parse_config_file(config_file=config_file_path)
     # go get the relevant configuration parameters
-    recording_directories, recording_filename_format, camera_names = parse_config_params(
+    recording_directories, recording_filename_format, camera_names = get_recording_params(
         root_directory=session_directory)
     # determine the files in the recording directory matching the filename format
     matching_files = find_files(recording_directories=recording_directories, file_name_format=recording_filename_format,

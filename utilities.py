@@ -67,9 +67,10 @@ def parse_frame_timestamp(frame_pixels):
 
 def parse_config_file(config_file):
     """
-
-    :param config_file:
-    :return:
+    Parses an entire session configuration file into sections (in this order): cameras, image snapshot, video snapshot,
+        and recording.
+    :param config_file: path to configuration file
+    :return: configuration dictionaries of key-value pairs; list of dicts for cameras section, single dict for others.
     """
     camera_config = []
     image_snap_config = []
@@ -145,7 +146,8 @@ def get_session_start_time_local(session_info_filename):
 
 def get_sesssion_recording_segment_time(session_info_filename):
     """
-    Finds the duration of video segments for perpetual recording during this session.
+    Finds the duration of video segments for perpetual recording during this session. This info is in the _SESSION_INFO
+        file, as well as the _SESSION_CONFIG file. Pulled from INFO file for convenience in this case.
     :param session_info_filename:  path to session info filename
     :return: number of minutes for video segments
     """
@@ -155,7 +157,7 @@ def get_sesssion_recording_segment_time(session_info_filename):
                 rst = float(line.strip("Recording segment duration: "))
                 break
         else:
-            raise ValueError("Couldn't find line with timestamp.")
+            raise ValueError("Couldn't find line with recording duration.")
     return rst
 
 
