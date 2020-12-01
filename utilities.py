@@ -21,16 +21,31 @@ with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
     dig_cs6 = pickle.load(pf)
 
 
-def parse_frame_timestamp(frame_pixels):
+def get_timestamp_pixel_limits():
+    """
+    Provides x/y coordinates (only) for timestamp pixel extraction. Note that return order is y1, y2, x1, x2. Timestamp
+        can be extracted from full frame like so: `timestamp_pixels = frame_pixels[y1:y2, x1:x2, :]`
+    :return: y-start (y1), y-stop (y2), x-start (x1), x-stop (x2)
+    """
+    return y0, y0+h, x0, x0+(n*w)
+
+
+def parse_frame_timestamp(frame_pixels=None, timestamp_pixels=None):
     """
     Use pixel checksum method to parse timestamp from video frame. First extracts timestamp area from frame
         array. Then converts to gray-scale, then converts to binary (black/white) mask. Each digit
         (monospaced) is then compared against the pre-computed pixel checksum values for an exact match.
-    :param frame_pixels: numpy array of full (4K) color video frame
+    :param frame_pixels: numpy array of full (4K) color video frame; dimensions should be 2160x3840x3
+    :param timestamp_pixels: numpy array of timestamp area, defined by `get_timestamp_pixel_limits()`
     :return: timestamp (None if checksum error), pixels from error digit (if no exact checksum match)
     """
-    # extract the timestamp in the x/y directions; keep the margin in both directions for now
-    tsimg = frame_pixels[0:(y0+h), 0:(x0+(n*w)), :]
+    if frame_pixels is not None:
+        # extract the timestamp in the x/y directions
+        tsimg = frame_pixels[y0:(y0+h), x0:(x0+(n*w)), :]
+    elif timestamp_pixels is not None:
+        tsimg = timestamp_pixels
+    else:
+        raise ValueError("One of `frame_pixels` or `timestamp_pixels` must be specified.")
     # convert color to gray-scale
     tsgray = cv2.cvtColor(tsimg, cv2.COLOR_BGR2GRAY)
     # convert to black/white binary mask using fixed threshold (1/2 intensity)
@@ -45,8 +60,8 @@ def parse_frame_timestamp(frame_pixels):
             ts_dig.append('.')
             continue
 
-        # extract the digit for this index, correcting for the margin that was left over
-        pixels = tsmask[y0:y0 + h, x0 + j * w:x0 + (j + 1) * w]
+        # extract the digit for this index, was already cropped x0:x0+n*w, y0:y0+h
+        pixels = tsmask[:, j*w:x0+(j+1)*w]
         # compute the 6-area checksum and convert it to an array
         cs = [[int(pixels[:h13, :w12].sum() / 255), int(pixels[:h13, w12:].sum() / 255)],
               [int(pixels[h13:h23, :w12].sum() / 255), int(pixels[h13:h23, w12:].sum() / 255)],
