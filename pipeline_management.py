@@ -413,24 +413,75 @@ class IngestSession:
             if self.frame_count[camera_name] % reporting_interval == 0:
                 logbook.info("FRAMES: Camera {} frame count = {}".format(camera_name, self.frame_count))
 
+    def check_validity_recording_file_name_formatter(self):
+        # check the validity of the recording directory and filename
+        file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
+        # split path location into directory and filename
+        file_dir, file_name = os.path.split(file_location)
+        if file_dir.startswith('./'):
+            file_dir = os.path.join(self.session_absolute_directory, file_dir[2:])
+        else:
+            logbook.warning("Absolute directory implied for persistent recording location.")
+        # check that the file number formatter is present
+        if '%d' not in file_name and not any(['%0{}d'.format(i) in file_name for i in range(10)]):
+            logbook.critical("Problem with recording configuration.")
+            raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
+        # check if session number in filename format
+        if '{session_num}' in file_dir:
+            logbook.info("Recording file name formatter will have session number in directory.")
+        if '{session_num}' in file_name:
+            logbook.info("Recording file name formatter will have session number in each file name.")
+        # check if we need to create camera-specific directories, or just one directory
+        if '{cam_name}' in file_dir:
+            logbook.info("Recording file name formatter will have camera name in directories.")
+        elif '{cam_name}' in file_name:
+            logbook.info("Recording file name formatter will have camera name in each file name.")
+        else:
+            # didn't find a camera name placeholder in either the file_dir or the file_name
+            logbook.critical("Problem with recording configuration.")
+            raise AttributeError("Need to camera name placeholder ('{cam_name}') in recording filename template.")
+
+    def get_recording_file_name_formatters(self):
+        """
+        Takes the recording filename formatter string in the recording configuration section and formats it with the
+            camera names (required) and the session number (optional) for directories and filenames.
+        :return: list of tuples of (directory, filename_formatter); e.g., (/data/session_5/recording, s5_cam0_%d.mp4)
+        """
+        directory_file_formatters = []
+        # get the recording filename formatter from the config
+        file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
+        unformat_dir, unformat_file = os.path.split(file_location)
+        # check if this is a relative or absolute file path
+        if unformat_dir.startswith('./'):
+            unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
+        # check if session number needs to be formatted into either directory or file
+        if '{session_num}' in unformat_dir:
+            unformat_dir = unformat_dir.format(session_num=self.this_session_number)
+        if '{session_num}' in unformat_file:
+            unformat_file = unformat_file.format(session_num=self.this_session_number)
+        # now put the camera names into the directories and files
+        for cam_name in self.pipelines_cameras.keys():
+            if '{cam_name}' in unformat_dir:
+                fd = unformat_dir.format(cam_name=cam_name)
+            else:
+                fd = unformat_dir
+            if '{cam_name}' in unformat_file:
+                ff = unformat_file.format(cam_name=cam_name)
+            else:
+                ff = unformat_file
+            directory_file_formatters.append((cam_name, fd, ff))
+        # return the list of formatted (directory, file) tuples; file formatter still has %d indicator in it
+        return directory_file_formatters
+
     def get_recording_file_stats(self):
         """
         Walk the directory(s) where the persistent recording is taking place and report the number of files and size.
         :return: number of total files, total size of all files
         """
-        file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
-        unformat_dir, unformat_file = os.path.split(file_location)
-        if unformat_dir.startswith('./'):
-            unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
-        recording_dirs = []
-        if '{}' in unformat_dir:
-            for cam_name in self.pipelines_cameras.keys():
-                recording_dirs.append(unformat_dir.format(cam_name))
-        else:
-            recording_dirs.append(unformat_dir)
+        directories_files = self.get_recording_file_name_formatters()
         size = 0
         num = 0
-        for rdir in recording_dirs:
+        for cam_name, rdir, rfile in directories_files:
             if os.path.exists(rdir):
                 for filename in os.listdir(rdir):
                     size += os.path.getsize(os.path.join(rdir, filename))
@@ -611,30 +662,15 @@ class IngestSession:
             pd += 'splitmuxsink name={} async-finalize=true muxer-pad-map=x-pad-map,video=video_0'.format(
                 PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name))
         record_h264 = PipelineEntity(self.client, self.persistent_record_name, pd)
-        # check the validity of the recording directory and filename
-        file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
-        # split path location into directory and filename
-        file_dir, file_name = os.path.split(file_location)
-        if file_dir.startswith('./'):
-            file_dir = os.path.join(self.session_absolute_directory, file_dir[2:])
-        else:
-            logbook.warning("Absolute directory implied for persistent recording location.")
-        # check that the file number formatter is present
-        if '%d' not in file_name and not any(['%0{}d'.format(i) in file_name for i in range(10)]):
-            logbook.critical("Problem with recording configuration.")
-            raise AttributeError("Need to include '%d' or '%0Nd' (N:0-9) in  recording filename template.")
-        # check if we need to create camera-specific directories, or just one directory
-        if '{cam_name}' in file_dir:
-            create_dirs = [file_dir.format(cam_name=cam_name) for cam_name in self.pipelines_cameras.keys()]
-        elif '{cam_name}' in file_name:
-            create_dirs = [file_dir]
-        else:
-            # didn't find a camera name placeholder in either the file_dir or the file_name
-            logbook.critical("Problem with recording configuration.")
-            raise AttributeError("Need to camera name placeholder ('{cam_name}') in recording filename template.")
+        # check that the recording file name formatter is valid
+        self.check_validity_recording_file_name_formatter()
+        # get the directories and filename formatters for recording
+        directory_file_formatters = self.get_recording_file_name_formatters()
+        # narrow down to set of directories
+        create_directories = set([fdr for cn, fdr, ffl in directory_file_formatters])
         # create the necessary directories if they don't exist
         try:
-            for create_dir in create_dirs:
+            for create_dir in create_directories:
                 if not os.path.exists(create_dir):
                     logbook.notice("Making directory for persistent recording: {}".format(create_dir))
                     os.mkdir(create_dir)
@@ -659,8 +695,8 @@ class IngestSession:
         else:
             print("Maximum number of files set directly from config value: {}".format(max_num_files))
         # set filesink (splitmuxsink element) properties for location and file management
-        for cam_name in self.pipelines_cameras.keys():
-            cam_full_location = os.path.join(file_dir, file_name).format(cam_name=cam_name)
+        for cam_name, file_dir, file_name in directory_file_formatters:
+            cam_full_location = os.path.join(file_dir, file_name)
             print("Setting file path for camera {} to {}".format(cam_name, cam_full_location))
             record_h264.set_property(PIPE_CAMERA_FILESINK_NAME_FORMATTER.format(self.persistent_record_name, cam_name),
                                      'location', cam_full_location)
@@ -881,21 +917,8 @@ class IngestSession:
         # already checked for camera formatter and file number formatter in config parser
         # also already made the necessary directories
         # not allowed to change this persistent recording location for consistency across start/stops
-        file_location = self.recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
-        if '{cam_name}' not in file_location:
-            logbook.error("Camera name placeholder required in persistent recording filename. Reverting to default.")
-            file_location = DEFAULT_RECORDING_FILENAME
-        unformat_dir, unformat_file = os.path.split(file_location)
-        if unformat_dir.startswith('./'):
-            unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
-        else:
-            logbook.warning("Absolute directory implied for persistent recording location.")
-        fns = []
-        for cam_name in self.pipelines_cameras.keys():
-            format_dir = (unformat_dir.format(cam_name=cam_name) if '{cam_name}' in unformat_dir else unformat_dir)
-            format_file = (unformat_file.format(cam_name=cam_name) if '{cam_name}' in unformat_file else unformat_file)
-            format_full_path = os.path.join(format_dir, format_file)
-            fns.append(format_full_path)
+        recording_directories_files = self.get_recording_file_name_formatters()
+        fns = [os.path.join(fdr, ffn) for cam_name, fdr, ffn in recording_directories_files]
         # start the whole recording pipeline
         logbook.notice("Starting recording.")
         try:
