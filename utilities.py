@@ -193,17 +193,27 @@ def get_session_number(session_info_filename=None):
     return sn
 
 
-def get_recording_params(session_root_directory, session_number, camera_configs, recording_config):
+def get_recording_params(session_root_directory, session_number=None, camera_configs=None, recording_config=None):
     """
     Determine relevant parameters from video ingest session configuration: list of recording directories where video
-        files are stored (might be delineated by camera), file name formatter (camera agnostic), list of camera names.
+        files are stored (corresponding to each camera, might be the same), file name formatter (corresponding to each
+        camera, might be the same), list of camera names. Note: length of all return lists = number of cameras.
+        Providing configuration dictionaries as inputs is optional; if either is left as None, the the session
+        configuration will be loaded and parsed automatically from _SESSION_CONFIG.config. Providing session_number is
+        also optional; it will be loaded from _SESSION_INFO.txt if not provided.
     :param session_root_directory: directory of video ingest session, which contains automatic copy of config file
-    :param session_number: session number corresponding to this directory
-    :param camera_configs: list of camera configuration dictionaries (used to get camera names)
-    :param recording_config: persistent recording configuration dictionary (used to get recording file name format)
-    :return: list of recording directories (1+ depending on filename format), file_name_format, list of camera names
+    :param session_number: (optional) session number corresponding to this directory
+    :param camera_configs: (optional) list of camera configuration dictionaries (used to get camera names)
+    :param recording_config: (optional) recording configuration dictionary (used to get recording file name format)
+    :return: list of recording directories for each camera, file name format for each camera, list of camera names
     """
-
+    if camera_configs is None or recording_config is None:
+        print("Loading configuration file instead of using configuration input arguments.")
+        camera_configs, _, _, recording_config = parse_config_file(
+            config_file=os.path.join(session_root_directory, "_SESSION_CONFIG.config"))
+    if session_number is None:
+        session_number = get_session_number(
+            session_info_filename=os.path.join(session_root_directory, DEFAULT_SESSION_INFO_FILENAME))
     # get camera names for filename formatting
     cam_names = []
     for single_camera_config in camera_configs:
@@ -223,54 +233,58 @@ def get_recording_params(session_root_directory, session_number, camera_configs,
     # check if directories are camera specific
     if '{cam_name}' in file_dir:
         rec_dirs = [file_dir.format(cam_name=cam_name) for cam_name in cam_names]
-    elif '{cam_name}' in file_name:
-        rec_dirs = [file_dir]
     else:
-        # this was already checked in pipeline creation
-        raise AttributeError("Need to camera name placeholder ('{cam_name}') in recording filename template.")
+        rec_dirs = [file_dir for _ in cam_names]
+    # check if file name is camera specific
+    if '{cam_name}' in file_name:
+        file_names = [file_name.format(cam_name=cam_name) for cam_name in cam_names]
+    else:
+        file_names = [file_name for _ in cam_names]
+    # list of recording directories corresponding to each camera (might all be the same if not delineated by camera)
+    # list of file names corresponding to each camera (might all be the same if not delineated by camera)
+    # list of camera names
+    return rec_dirs, file_names, cam_names
 
-    return rec_dirs, file_name, cam_names
 
-
-def find_files(recording_directories, file_name_format, camera_names, drop_last_file=False, first_file_index=0,
+def find_files(recording_directories, file_name_formats, camera_names, drop_last_file=False, first_file_index=0,
                filter_filenames=None):
     """
-    Determine files in recording directories that match file recording naming format.
-    :param recording_directories: list of directories in which to search for files (one or many, based on file naming)
-    :param file_name_format: file name format with which the persistent recording was working
+    Determine files in recording directories that match file recording naming format. This function is written to be
+        used immediately following get_recording_params(...). The output of that function can be used as the inputs
+        `recording_directories`, `file_name_formats`, `camera_names` to this function. The directories and file name
+        formats should correspond in length and order to the camera_names, though one of those lists may contain all
+        the same items (e.g., './recording' for the recording directories).
+    :param recording_directories: list of directories in which to search for files; each corresponding to camera_names.
+    :param file_name_formats: list of file name formats used for recording; each corresponding to camera_names.
     :param camera_names: list of camera names to substitute into file name format
     :param drop_last_file: flag to ignore/drop the last file in the recording sequence, per camera
     :param first_file_index: minimum recording segment number to keep files (used for checking recent files only)
-    :param filter_filenames: list of filters to narrow down filenames (tested by `if filter in filename:`)
-    :return: list of file names for recordings matching file name format
+    :param filter_filenames: list of filters to narrow down filenames (tested by `if any filter in filename`)
+    :return: list of tuples of form (file directory, filename, segment_number, camera_name) for matching recordings
     """
-    file_name_regex = re.sub('%(0[0-9]{1})*d', '([0-9]+)', file_name_format)
-    # put in the camera name in any location (directory and/or file)
-    cam_file_name_regexs = [(cn, file_name_regex.replace('{cam_name}', cn)) for cn in camera_names]
-    print("Searching for file names matching any of:", cam_file_name_regexs)
-    all_files = []
-    for rdir in recording_directories:
-        for rfile in os.listdir(rdir):
-            all_files.append(os.path.join(rdir, rfile))
-    print("Found {} files in recording directories.".format(len(all_files)))
+    file_name_regexs = [re.sub('%(0[0-9]{1})*d', '([0-9]+)', fnf) for fnf in file_name_formats]
     match_files = []
-    for cn, crx in cam_file_name_regexs:
+    for cn, rdir, fnr in zip(camera_names, recording_directories, file_name_regexs):
+        directory_files = os.listdir(rdir)
+        print("Searching {} files in directory {} to match {} (camera {}).".format(len(directory_files), rdir, fnr, cn))
         cam_files = []
-        for fl in all_files:
-            rem = re.search(crx, fl)
+        for fl in directory_files:
+            rem = re.search(fnr, fl)
             if rem is not None:
                 # extract the first group match, which contains the segment index
                 remi = int(rem.group(1))
                 if remi >= first_file_index:
-                    cam_files.append((fl, remi, cn))
+                    cam_files.append((rdir, fl, remi, cn))
         # sort files by segment index and drop the last one, if requested, while adding to all matches
         if drop_last_file is True:
             match_files += sorted(cam_files, key=lambda x: x[1])[:-1]
+            print("Found {} matching files.".format(len(cam_files) - 1))
         else:
             match_files += sorted(cam_files, key=lambda x: x[1])
-    print("Found {} files matching recording file name format.".format(len(match_files)))
+            print("Found {} matching files.".format(len(cam_files)))
     if filter_filenames is not None:
-        match_files = [fn for fn in match_files if any([fn_filt in fn[0] for fn_filt in filter_filenames])]
+        match_files = [fn for fn in match_files if
+                       any([fn_filt in os.path.join(fn[0], fn[1]) for fn_filt in filter_filenames])]
         print("Filtered files to {} matching.".format(len(match_files)))
     return match_files
 

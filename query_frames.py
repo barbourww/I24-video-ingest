@@ -20,10 +20,10 @@ def get_video_frame_counts(video_file_names):
     :return: dictionary of frame counts {video-file-name: frame-count, ...}
     """
     if not isinstance(video_file_names, (list, tuple)):
-        raise TypeError("Must provide list of tuples (video-file-name, segment-number).")
+        raise TypeError("Must provide list of tuples (video-file-dir., video-file-name, segment-number, cam-name).")
     frame_counts = {}
     print("\nRunning video frame count queries.")
-    for i, (vfn, vfi) in enumerate(video_file_names):
+    for i, (vfdr, vfn, vfi, vfc) in enumerate(video_file_names):
         if i % 500 == 0:
             print("Query number {}".format(i))
         cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames",
@@ -342,12 +342,12 @@ def main(argv):
     config_file_path = os.path.join(session_directory, "_SESSION_CONFIG.config")
     camera_config, _, _, recording_config = utilities.parse_config_file(config_file=config_file_path)
     # go get the relevant configuration parameters
-    recording_directories, recording_filename_format, camera_names = utilities.get_recording_params(
+    recording_directories, recording_filenames, camera_names = utilities.get_recording_params(
         session_root_directory=session_directory, session_number=session_number,
         camera_configs=camera_config, recording_config=recording_config)
     # determine the files in the recording directory matching the filename format
     matching_files = utilities.find_files(recording_directories=recording_directories,
-                                          file_name_format=recording_filename_format, camera_names=camera_names,
+                                          file_name_formats=recording_filenames, camera_names=camera_names,
                                           drop_last_file=drop_last_file, first_file_index=first_file,
                                           filter_filenames=input_filename_filters)
 
