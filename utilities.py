@@ -23,13 +23,22 @@ with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
     
     
 
-def get_precomputed_checksums():
-    with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
+def get_precomputed_checksums(abs_path = None):
+    path = './resources/timestamp_pixel_checksum_6.pkl'
+    if abs_path is not None:
+        path = abs_path
+        
+    with open(path, 'rb') as pf:
         dig_cs6 = pickle.load(pf)
+        
     return dig_cs6
     
-def get_timestamp_geometry():
-    with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
+def get_timestamp_geometry(abs_path = None):
+    path = './resources/timestamp_geometry_4K.pkl'
+    if abs_path is not None:
+        path = abs_path
+        
+    with open(path, 'rb') as pf:
         g = pickle.load(pf)
     return g
 
