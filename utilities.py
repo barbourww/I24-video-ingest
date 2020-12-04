@@ -61,7 +61,7 @@ def parse_frame_timestamp(frame_pixels=None, timestamp_pixels=None):
             continue
 
         # extract the digit for this index, was already cropped x0:x0+n*w, y0:y0+h
-        pixels = tsmask[:, j*w:x0+(j+1)*w]
+        pixels = tsmask[:, j*w:(j+1)*w]
         # compute the 6-area checksum and convert it to an array
         cs = [[int(pixels[:h13, :w12].sum() / 255), int(pixels[:h13, w12:].sum() / 255)],
               [int(pixels[h13:h23, :w12].sum() / 255), int(pixels[h13:h23, w12:].sum() / 255)],
