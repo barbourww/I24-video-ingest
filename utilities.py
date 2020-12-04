@@ -17,9 +17,21 @@ with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
     h23 = g['h23']
     h12 = g['h12']
     w12 = g['w12']
+    
 with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
     dig_cs6 = pickle.load(pf)
+    
+    
 
+def get_precomputed_checksums():
+    with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
+        dig_cs6 = pickle.load(pf)
+    return dig_cs6
+    
+def get_timestamp_geometry():
+    with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
+        g = pickle.load(pf)
+    return g
 
 def get_timestamp_pixel_limits():
     """
@@ -30,15 +42,33 @@ def get_timestamp_pixel_limits():
     return y0, y0+h, x0, x0+(n*w)
 
 
-def parse_frame_timestamp(frame_pixels=None, timestamp_pixels=None):
+def parse_frame_timestamp(frame_pixels=None, timestamp_pixels=None, timestamp_geometry = None, precomputed_checksums = None):
     """
     Use pixel checksum method to parse timestamp from video frame. First extracts timestamp area from frame
         array. Then converts to gray-scale, then converts to binary (black/white) mask. Each digit
         (monospaced) is then compared against the pre-computed pixel checksum values for an exact match.
     :param frame_pixels: numpy array of full (4K) color video frame; dimensions should be 2160x3840x3
     :param timestamp_pixels: numpy array of timestamp area, defined by `get_timestamp_pixel_limits()`
+    :param timestamp_geometry - dictionary of parameters used for determining area of each digit in checksum (default None, use predefined variable)
+    :param precomputed_checksums - dictionary of checksum:digit pairs (default None, use predefined variable)
     :return: timestamp (None if checksum error), pixels from error digit (if no exact checksum match)
     """
+    
+    if timestamp_geometry is not None:
+        g = timestamp_geometry
+        w = g['w']
+        h = g['h']
+        x0 = g['x0']
+        y0 = g['y0']
+        n = g['n']
+        h13 = g['h13']
+        h23 = g['h23']
+        h12 = g['h12']
+        w12 = g['w12']
+        
+    if precomputed_checksums is not None:
+        dig_cs6 = precomputed_checksums
+    
     if frame_pixels is not None:
         # extract the timestamp in the x/y directions
         tsimg = frame_pixels[y0:(y0+h), x0:(x0+(n*w)), :]
