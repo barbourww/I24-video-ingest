@@ -6,20 +6,21 @@ import ast
 from numpy import array
 from parameters import *
 
-with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
-    g = pickle.load(pf)
-    w = g['w']
-    h = g['h']
-    x0 = g['x0']
-    y0 = g['y0']
-    n = g['n']
-    h13 = g['h13']
-    h23 = g['h23']
-    h12 = g['h12']
-    w12 = g['w12']
-    
-with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
-    dig_cs6 = pickle.load(pf)
+if __name__ == "__main__":
+    with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
+        g = pickle.load(pf)
+        w = g['w']
+        h = g['h']
+        x0 = g['x0']
+        y0 = g['y0']
+        n = g['n']
+        h13 = g['h13']
+        h23 = g['h23']
+        h12 = g['h12']
+        w12 = g['w12']
+        
+    with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
+        dig_cs6 = pickle.load(pf)
     
     
 
