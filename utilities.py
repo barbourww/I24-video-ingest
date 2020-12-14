@@ -5,26 +5,9 @@ import cv2
 import ast
 from numpy import array
 from parameters import *
-
-if __name__ == "__main__":
-    with open('./resources/timestamp_geometry_4K.pkl', 'rb') as pf:
-        g = pickle.load(pf)
-        w = g['w']
-        h = g['h']
-        x0 = g['x0']
-        y0 = g['y0']
-        n = g['n']
-        h13 = g['h13']
-        h23 = g['h23']
-        h12 = g['h12']
-        w12 = g['w12']
-        
-    with open('./resources/timestamp_pixel_checksum_6.pkl', 'rb') as pf:
-        dig_cs6 = pickle.load(pf)
-    
     
 
-def get_precomputed_checksums(abs_path = None):
+def get_precomputed_checksums(abs_path=None):
     path = './resources/timestamp_pixel_checksum_6.pkl'
     if abs_path is not None:
         path = abs_path
@@ -33,8 +16,9 @@ def get_precomputed_checksums(abs_path = None):
         dig_cs6 = pickle.load(pf)
         
     return dig_cs6
-    
-def get_timestamp_geometry(abs_path = None):
+
+
+def get_timestamp_geometry(abs_path=None):
     path = './resources/timestamp_geometry_4K.pkl'
     if abs_path is not None:
         path = abs_path
@@ -43,41 +27,47 @@ def get_timestamp_geometry(abs_path = None):
         g = pickle.load(pf)
     return g
 
+
 def get_timestamp_pixel_limits():
     """
     Provides x/y coordinates (only) for timestamp pixel extraction. Note that return order is y1, y2, x1, x2. Timestamp
         can be extracted from full frame like so: `timestamp_pixels = frame_pixels[y1:y2, x1:x2, :]`
     :return: y-start (y1), y-stop (y2), x-start (x1), x-stop (x2)
     """
+    geom = get_timestamp_geometry()
+    y0 = geom['y0']
+    x0 = geom['x0']
+    h = geom['h']
+    n = geom['n']
+    w = geom['w']
     return y0, y0+h, x0, x0+(n*w)
 
 
-def parse_frame_timestamp(frame_pixels=None, timestamp_pixels=None, timestamp_geometry = None, precomputed_checksums = None):
+def parse_frame_timestamp(timestamp_geometry, precomputed_checksums, frame_pixels=None, timestamp_pixels=None):
     """
     Use pixel checksum method to parse timestamp from video frame. First extracts timestamp area from frame
         array. Then converts to gray-scale, then converts to binary (black/white) mask. Each digit
         (monospaced) is then compared against the pre-computed pixel checksum values for an exact match.
+    :param timestamp_geometry: dictionary of parameters used for determining area of each digit in checksum
+        (load using utilities.get_timestamp_geometry)
+    :param precomputed_checksums: dictionary of checksum:digit pairs (load using utilities.get_precomputed_checksums())
     :param frame_pixels: numpy array of full (4K) color video frame; dimensions should be 2160x3840x3
     :param timestamp_pixels: numpy array of timestamp area, defined by `get_timestamp_pixel_limits()`
-    :param timestamp_geometry - dictionary of parameters used for determining area of each digit in checksum (default None, use predefined variable)
-    :param precomputed_checksums - dictionary of checksum:digit pairs (default None, use predefined variable)
     :return: timestamp (None if checksum error), pixels from error digit (if no exact checksum match)
     """
-    
-    if timestamp_geometry is not None:
-        g = timestamp_geometry
-        w = g['w']
-        h = g['h']
-        x0 = g['x0']
-        y0 = g['y0']
-        n = g['n']
-        h13 = g['h13']
-        h23 = g['h23']
-        h12 = g['h12']
-        w12 = g['w12']
+    # extract geometry values from timestamp_geometry dictionary
+    g = timestamp_geometry
+    w = g['w']
+    h = g['h']
+    x0 = g['x0']
+    y0 = g['y0']
+    n = g['n']
+    h13 = g['h13']
+    h23 = g['h23']
+    h12 = g['h12']
+    w12 = g['w12']
         
-    if precomputed_checksums is not None:
-        dig_cs6 = precomputed_checksums
+    dig_cs6 = precomputed_checksums
     
     if frame_pixels is not None:
         # extract the timestamp in the x/y directions
