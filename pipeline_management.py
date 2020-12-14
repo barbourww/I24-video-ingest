@@ -2,7 +2,7 @@ __author__ = "William Barbour, Ph.D.; Vanderbilt University"
 __credits__ = ["Daniel Work, Ph.D.; Vanderbilt University",
                "Derek Gloudemans; Vanderbilt University",
                "RidgeRun, LLC",]
-__version__ = "1.02 (dev)"
+__version__ = "1.03 (dev)"
 __maintainer__ = "William Barbour"
 __status__ = "Development"
 
