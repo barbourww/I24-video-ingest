@@ -255,21 +255,9 @@ def get_recording_params(session_root_directory, session_number=None, camera_con
     # check if it's a relative file path, and if so change it to absolute using session_root_directory
     if file_dir.startswith('./'):
         file_dir = os.path.join(session_root_directory, file_dir[2:])
-    # put session number in directory or filename, if indicated
-    if '{session_num}' in file_dir:
-        file_dir = file_dir.format(session_num=session_number)
-    if '{session_num}' in file_name:
-        file_name = file_name.format(session_num=session_number)
-    # check if directories are camera specific
-    if '{cam_name}' in file_dir:
-        rec_dirs = [file_dir.format(cam_name=cam_name) for cam_name in cam_names]
-    else:
-        rec_dirs = [file_dir for _ in cam_names]
-    # check if file name is camera specific
-    if '{cam_name}' in file_name:
-        file_names = [file_name.format(cam_name=cam_name) for cam_name in cam_names]
-    else:
-        file_names = [file_name for _ in cam_names]
+    # put session number and camera name in directory or filename, if indicated
+    rec_dirs = [file_dir.format(cam_name=cam_name, session_num=session_number) for cam_name in cam_names]
+    file_names = [file_name.format(cam_name=cam_name, session_num=session_number) for cam_name in cam_names]
     # list of recording directories corresponding to each camera (might all be the same if not delineated by camera)
     # list of file names corresponding to each camera (might all be the same if not delineated by camera)
     # list of camera names
