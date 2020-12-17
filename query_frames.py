@@ -48,6 +48,8 @@ def get_video_frame_timestamps(video_file_names):
     if not isinstance(video_file_names, (list, tuple)):
         raise TypeError("Must provide list of tuples (video-file-name, segment-number).")
     import cv2
+    timestamp_geom = utilities.get_timestamp_geometry()
+    timestamp_checksums = utilities.get_precomputed_checksums()
     timestamps = {}
     pixel_errors = []
     for i, (vfn, vfi) in enumerate(video_file_names):
@@ -65,7 +67,9 @@ def get_video_frame_timestamps(video_file_names):
             if frame is None:
                 print("End of video after {} frames.".format(i))
                 break
-            frame_ts, px_err = utilities.parse_frame_timestamp(frame_pixels=frame)
+            frame_ts, px_err = utilities.parse_frame_timestamp(timestamp_geometry=timestamp_geom,
+                                                               precomputed_checksums=timestamp_checksums,
+                                                               frame_pixels=frame)
             if frame_ts is not None:
                 cam_ts.append(frame_ts)
             else:

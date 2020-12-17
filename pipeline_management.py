@@ -2,7 +2,7 @@ __author__ = "William Barbour, Ph.D.; Vanderbilt University"
 __credits__ = ["Daniel Work, Ph.D.; Vanderbilt University",
                "Derek Gloudemans; Vanderbilt University",
                "RidgeRun, LLC",]
-__version__ = "1.02 (dev)"
+__version__ = "1.03 (dev)"
 __maintainer__ = "William Barbour"
 __status__ = "Development"
 
@@ -454,21 +454,10 @@ class IngestSession:
         # check if this is a relative or absolute file path
         if unformat_dir.startswith('./'):
             unformat_dir = os.path.join(self.session_absolute_directory, unformat_dir[2:])
-        # check if session number needs to be formatted into either directory or file
-        if '{session_num}' in unformat_dir:
-            unformat_dir = unformat_dir.format(session_num=self.this_session_number)
-        if '{session_num}' in unformat_file:
-            unformat_file = unformat_file.format(session_num=self.this_session_number)
-        # now put the camera names into the directories and files
+        # put the camera names and session number into the directories and files, if called for with formatters
         for cam_name in self.pipelines_cameras.keys():
-            if '{cam_name}' in unformat_dir:
-                fd = unformat_dir.format(cam_name=cam_name)
-            else:
-                fd = unformat_dir
-            if '{cam_name}' in unformat_file:
-                ff = unformat_file.format(cam_name=cam_name)
-            else:
-                ff = unformat_file
+            fd = unformat_dir.format(cam_name=cam_name, session_num=self.this_session_number)
+            ff = unformat_file.format(cam_name=cam_name, session_num=self.this_session_number)
             directory_file_formatters.append((cam_name, fd, ff))
         # return the list of formatted (directory, file) tuples; file formatter still has %d indicator in it
         return directory_file_formatters

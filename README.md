@@ -1,7 +1,7 @@
 # I24-video-ingest
 ###### Video ingestions pipeline management software.
 ###### Author: William Barbour, Ph.D.; Vanderbilt University
-###### Version: 1.02 (dev)
+###### Version: 1.03 (dev)
 ###### Status: Development
 
 - - -
