@@ -223,7 +223,7 @@ def get_session_number(session_info_filename=None):
     return sn
 
 
-def get_recording_params(session_root_directory, session_number=None, camera_configs=None, recording_config=None):
+def get_recording_params(session_root_directory, session_number=None, camera_configs=None, recording_config=None,verbose = True):
     """
     Determine relevant parameters from video ingest session configuration: list of recording directories where video
         files are stored (corresponding to each camera, might be the same), file name formatter (corresponding to each
@@ -235,10 +235,11 @@ def get_recording_params(session_root_directory, session_number=None, camera_con
     :param session_number: (optional) session number corresponding to this directory
     :param camera_configs: (optional) list of camera configuration dictionaries (used to get camera names)
     :param recording_config: (optional) recording configuration dictionary (used to get recording file name format)
+    :param verbose: bool - allow or supress function print statements
     :return: list of recording directories for each camera, file name format for each camera, list of camera names
     """
     if camera_configs is None or recording_config is None:
-        print("Loading configuration file instead of using configuration input arguments.")
+        if verbose: print("Loading configuration file instead of using configuration input arguments.")
         camera_configs, _, _, recording_config = parse_config_file(
             config_file=os.path.join(session_root_directory, "_SESSION_CONFIG.config"))
     if session_number is None:
@@ -265,7 +266,7 @@ def get_recording_params(session_root_directory, session_number=None, camera_con
 
 
 def find_files(recording_directories, file_name_formats, camera_names, drop_last_file=False, first_file_index=0,
-               filter_filenames=None):
+               filter_filenames=None, verbose = True):
     """
     Determine files in recording directories that match file recording naming format. This function is written to be
         used immediately following get_recording_params(...). The output of that function can be used as the inputs
@@ -278,13 +279,14 @@ def find_files(recording_directories, file_name_formats, camera_names, drop_last
     :param drop_last_file: flag to ignore/drop the last file in the recording sequence, per camera
     :param first_file_index: minimum recording segment number to keep files (used for checking recent files only)
     :param filter_filenames: list of filters to narrow down filenames (tested by `if any filter in filename`)
+    :param verbose: bool - allow or supress function print statements
     :return: list of tuples of form (file directory, filename, segment_number, camera_name) for matching recordings
     """
     file_name_regexs = [re.sub('%(0[0-9]{1})*d', '([0-9]+)', fnf) for fnf in file_name_formats]
     match_files = []
     for cn, rdir, fnr in zip(camera_names, recording_directories, file_name_regexs):
         directory_files = os.listdir(rdir)
-        print("Searching {} files in directory {} to match {} (camera {}).".format(len(directory_files), rdir, fnr, cn))
+        if verbose: print("Searching {} files in directory {} to match {} (camera {}).".format(len(directory_files), rdir, fnr, cn))
         cam_files = []
         for fl in directory_files:
             rem = re.search(fnr, fl)
@@ -296,14 +298,14 @@ def find_files(recording_directories, file_name_formats, camera_names, drop_last
         # sort files by segment index and drop the last one, if requested, while adding to all matches
         if drop_last_file is True:
             match_files += sorted(cam_files, key=lambda x: x[1])[:-1]
-            print("Found {} matching files.".format(len(cam_files) - 1))
+            if verbose: print("Found {} matching files.".format(len(cam_files) - 1))
         else:
             match_files += sorted(cam_files, key=lambda x: x[1])
-            print("Found {} matching files.".format(len(cam_files)))
+            if verbose: print("Found {} matching files.".format(len(cam_files)))
     if filter_filenames is not None:
         match_files = [fn for fn in match_files if
                        any([fn_filt in os.path.join(fn[0], fn[1]) for fn_filt in filter_filenames])]
-        print("Filtered files to {} matching.".format(len(match_files)))
+        if verbose: print("Filtered files to {} matching.".format(len(match_files)))
     return match_files
 
 
