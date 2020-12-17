@@ -297,10 +297,10 @@ def find_files(recording_directories, file_name_formats, camera_names, drop_last
                     cam_files.append((rdir, fl, remi, cn))
         # sort files by segment index and drop the last one, if requested, while adding to all matches
         if drop_last_file is True:
-            match_files += sorted(cam_files, key=lambda x: x[1])[:-1]
+            match_files += sorted(cam_files, key=lambda x: x[2])[:-1]
             if verbose: print("Found {} matching files.".format(len(cam_files) - 1))
         else:
-            match_files += sorted(cam_files, key=lambda x: x[1])
+            match_files += sorted(cam_files, key=lambda x: x[2])
             if verbose: print("Found {} matching files.".format(len(cam_files)))
     if filter_filenames is not None:
         match_files = [fn for fn in match_files if
