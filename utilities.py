@@ -220,7 +220,7 @@ def get_session_number(session_info_filename=None):
                 break
         else:
             raise ValueError("Couldn't find line with session number.")
-    return sn
+    return int(sn)
 
 
 def get_recording_params(session_root_directory, session_number=None, camera_configs=None, recording_config=None,verbose = True):
