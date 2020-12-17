@@ -249,10 +249,15 @@ def get_recording_params(session_root_directory, session_number=None, camera_con
     cam_names = []
     for single_camera_config in camera_configs:
         cam_names.append(single_camera_config['name'])
+    print("All camera names: {}".format(cam_names))
+    
     # get the recording filename, or the default
     file_location = recording_config.get('recording_filename', DEFAULT_RECORDING_FILENAME)
     # split path location into directory and filename
     file_dir, file_name = os.path.split(file_location)
+    print("File template name: {}".format(file_name))
+    print("File location: {}".format(file_location))
+    
     # check if it's a relative file path, and if so change it to absolute using session_root_directory
     if file_dir.startswith('./'):
         file_dir = os.path.join(session_root_directory, file_dir[2:])
